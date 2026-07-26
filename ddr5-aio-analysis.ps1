@@ -1,10 +1,24 @@
-<#
-.SYNOPSIS
-  Extracts candidate corrupted-memory addresses from these dump types and
-  correlates the resulting physical addresses - both exact matches and near
-  misses - across multiple dump files. Includes observed/retained dumps
-  used in testing this script.
+<#######################################################################
+ ddr5-aio-analysis.ps1
 
+This program is free software: you can redistribute it and/or modify it under the terms of the GNU
+General Public License as published by the Free Software Foundation, either version 3 of the License,
+or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;
+without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with this program.
+If not, see https://www.gnu.org/licenses/.
+
+Copyright (C) 2026 Andrew Newbury, Exponentially Digital.
+########################################################################
+
+ .SYNOPSIS
+ Extracts candidate corrupted-memory addresses from these dump types and correlates the resulting
+ physical addresses, both exact matches and near misses, across multiple dump files:
+  
    KERNEL_SECURITY_CHECK_FAILURE (0x139) - 30 historical incidences, 3 retained dumps
    IRQL_NOT_LESS_OR_EQUAL (a) - 11 historical incidences, 1 retained dump
    SECURE_KERNEL_ERROR (18b) - 6 historical incidences, 1 retained dumps  - low confidence; see v0.3.0 notes below
@@ -18,10 +32,24 @@
    FAULTY_HARDWARE_CORRUPTED_PAGE (12b) - 1 historical occurence, 0 retained dumps
    HYPERVISOR_ERROR (20001) - 1 historical occurence, 0 retained dumps
 
-.BACKLOG to do
-  - ...placeholder...
+. PARAMETERS 
+.\ddr5-aio-analysis.ps1 `
+    [-DumpFolder "C:\CrashDumps"] `
+    [-OutputFolder "C:\CrashDumps\Analysis"] `
+    [-ProximityThresholdBytes 0x1000] `
+    [-VerboseOnTimeout] `
 
+  -CDB and -SymbolPath - only need overriding if your WinDbg install isn't in your path or your symbol cache lives somewhere other than the default, see README.md
+  -ProximityThresholdBytes - controls how close two physical addresses from different dumps have to be to count as a near-match (default `0x10000`; tighten this as your dump count grows, since a wide threshold on a large dump set produces a lot of coincidental pairings, see README.md.
+ -VerboseOnTimeout - displays all raw output from `cdb.exe` for use in situations where cdb execution exceeds 240s.
+
+.BACKLOG
+  - add 0x200001and 0x12b stop codes
+  
 .NOTES
+.VERSION
+v0.4.3 Added version display at commencement, console screenshot saved to
+  the current directory, and displays script runtime at script completion.
 v0.4.2 Added -AnalyzeTimeoutSeconds (default 240, unchanged). A dump that
   crashed in an unusually symbol-heavy process context (eg explorer.exe
   pulling in the full Windows Shell/XAML/CoreMessaging stack - 100+
@@ -125,6 +153,9 @@ v0.1.6 Added 0x1a, which does not fit the other three codes' pattern:
   console warning names the subtype and says it needs manual checking
   against Microsoft's bugcheck reference before extending this script to
   cover it.
+ 
+.AUTHOR
+    Andrew Newbury, Exponentially Digital (with significant help from Claude Code).
 #>
 
 param(
@@ -136,9 +167,54 @@ param(
     [string]$SymbolPath = "srv*C:\Symbols*https://msdl.microsoft.com/download/symbols",
     [int64]$ProximityThresholdBytes = 0x10000,
     [switch]$VerboseOnTimeout,
-    [int]$AnalyzeTimeoutSeconds = 240
+    [int]$AnalyzeTimeoutSeconds = 240,
+    [switch]$NoClearScreen
 )
 
+# --- START OF SCRIPT --
+if (-not $NoClearScreen) { Clear-Host }
+$stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+
+# Execution header display
+$scriptPath = $PSCommandPath
+if (-not $scriptPath) { $scriptPath = $MyInvocation.MyCommand.Path }
+
+# Extract the version digits (e.g., 0.4.3) from the line after .VERSION
+$scriptVersion = "Unknown"
+if (Test-Path $scriptPath) {
+    $rawContent = Get-Content $scriptPath -Raw
+    if ($rawContent -match '\.VERSION\s*[\r\n]+\s*v?(\d+\.\d+\.\d+)') {
+        $scriptVersion = $Matches[1]
+    }
+}
+
+# Get file write time
+$scriptTime = if (Test-Path $scriptPath) { (Get-Item $scriptPath).LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss") } else { "Unknown" }
+
+# display program (green) version ( yellow) and timestamp (grey)
+$e = [char]27
+Write-Host "`n$e[32mddr5-aio-analysis.ps1$e[0m $e[33mv$scriptVersion$e[0m $e[90m($scriptTime)$e[0m`n"
+
+# Display parameters used
+Write-Host "Active command line parameters:" -ForegroundColor DarkCyan
+if ($PSBoundParameters.Count -gt 0) {
+    foreach ($kvp in $PSBoundParameters.GetEnumerator()) {
+        if ($kvp.Value -is [switch]) {
+            # Display switch parameters cleanly (e.g., -VerboseOnTimeout)
+            if ($kvp.Value) { Write-Host "  -$($kvp.Key)" -ForegroundColor Gray }
+        } else {
+            # Display key-value parameters
+            Write-Host "  -$($kvp.Key) : $($kvp.Value)" -ForegroundColor Gray
+        }
+    }
+} else {
+    Write-Host "  (None - running with default values)" -ForegroundColor Gray
+}
+
+Write-Host "`nExecution started at $((Get-Date).ToString('yyyy-MM-dd HH:mm:ss.fff'))" 
+Write-Host "--------------------------------------------"
+
+# supported crash dump types
 $SupportedBugChecks = @("0x139", "0x3b", "0x7e", "0x1a", "0xef", "0xa", "0x18b", "0xc000021a")
 $ExceptionBasedBugChecks = @("0x139", "0x3b", "0x7e", "0xa")
 
@@ -774,3 +850,36 @@ if ($results.Count -gt 0) {
 }
 
 Write-Host "`nDone."
+
+# --- END OF SCRIPT ---
+$stopwatch.Stop()
+
+# Format elapsed time as HH:MM:SS.fff or total seconds
+$elapsed = $stopwatch.Elapsed
+$formattedTime = "{0:D2}:{1:D2}:{2:D2}.{3:D3}" -f $elapsed.Hours, $elapsed.Minutes, $elapsed.Seconds, $elapsed.Milliseconds
+
+Write-Host "--------------------------------------------"
+Write-Host "Execution time: $formattedTime ($([math]::Round($elapsed.TotalSeconds, 2))s)" -ForegroundColor Yellow
+
+# generate the timestamped filename
+$timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+$filename  = "ddr5-aio-analysis_$timestamp.txt"
+
+# set full path to current working directory
+$logFile = Join-Path -Path $PWD -ChildPath $filename
+
+# simulate Ctrl+Shift+A (Select All) and Ctrl+Shift+C (Copy) in Windows Terminal
+Add-Type -AssemblyName System.Windows.Forms
+[System.Windows.Forms.SendKeys]::SendWait("^+a")  # Ctrl+Shift+A
+Start-Sleep -Milliseconds 200
+[System.Windows.Forms.SendKeys]::SendWait("^+c")  # Ctrl+Shift+C
+Start-Sleep -Milliseconds 300
+
+# extract plain text clipboard content and save to file
+$textContent = Get-Clipboard
+if ($textContent) {
+    $textContent | Out-File -FilePath $logFile -Encoding utf8
+    Write-Host "`nConsole log saved as $logFile" -ForegroundColor Green
+} else {
+    Write-Host "`n[Warning] Clipboard contained no text data." -ForegroundColor Yellow
+}
