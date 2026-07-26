@@ -1,0 +1,86 @@
+name: "Release"
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run without creating a release"
+        required: false
+        default: "true" # Defaulting to true — manual runs are dry by default for safety
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  release:
+    name: Create release
+
+    concurrency:
+      group: release-${{ github.ref }}
+      cancel-in-progress: false
+
+    permissions:
+      contents: write
+
+    runs-on: ubuntu-latest
+    if: |
+      startsWith(github.ref, 'refs/tags/v') ||
+      github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Install Pandoc
+        run: sudo apt-get update && sudo apt-get install -y pandoc
+
+      - name: Prepare and Package Release Assets
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          REPO_NAME="${{ github.event.repository.name }}"
+
+          # 1. Define a temporary build directory outside of your repository root 
+          # to prevent rsync from copying it recursively
+          STAGE_DIR="/tmp/release-stage/${REPO_NAME}-${VERSION}"
+          mkdir -p "$STAGE_DIR"
+
+          # 2. Copy all your scripts and repository files into the staging folder
+          # Excludes hidden files/dirs like .git and .github
+          rsync -rr --exclude='.git*' . "$STAGE_DIR"
+
+          # 3. Clean up the markdown text:
+          #    - Drop all shields.io and visitor-badge lines
+          #    - Inject the version number ONLY under the first main title
+          #    - Convert GitHub's special '> [!WARNING]' callout into standard markdown bold
+          grep -vi 'shields.io\|badge' README.md \
+            | awk -v ver="${VERSION}" '!done && /^# / { print $0 "\n\n**Version:** " ver; done=1; next } 1' \
+            | sed 's/> \[\!WARNING\]/> **WARNING:**/' \
+            > /tmp/README.md
+
+          # 4. Generate README.html directly into the staging folder
+          pandoc /tmp/README.md -f gfm -t html -s --embed-resources --standalone -o "${STAGE_DIR}/README.html"
+
+          # 5. Compress the folder from the temporary location into your workspace root
+          cd /tmp/release-stage
+          zip -r "${GITHUB_WORKSPACE}/${REPO_NAME}-${VERSION}.zip" "${REPO_NAME}-${VERSION}"
+
+      - name: Dry run notice
+        if: ${{ github.event.inputs.dry_run == 'true' }}
+        run: echo "Dry run completed -- no release was created."
+
+      - name: Upload release assets
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
+        with:
+          generate_release_notes: true
+          # This disables GitHub's default un-customized source downloads
+          fail_on_unmatched_files: true
+          files: |
+            *.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
