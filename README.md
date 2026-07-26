@@ -1,6 +1,6 @@
-# ddr5-aio-analysis.md
+# ddr5-aio-analysis README.md
 
-- [ddr5-aio-analysis.md](#ddr5-aio-analysismd)
+- [ddr5-aio-analysis README.md](#ddr5-aio-analysis-readmemd)
   - [Overview](#overview)
   - [Background: why correlate physical addresses?](#background-why-correlate-physical-addresses)
     - [Key questions](#key-questions)
@@ -24,9 +24,14 @@
     - [Supported stop codes](#supported-stop-codes)
     - [Usage](#usage)
     - [How it works](#how-it-works)
+      - [Execution logic summary](#execution-logic-summary)
+      - [Windows memory management primer](#windows-memory-management-primer)
+      - [Key elements of the hierarchy](#key-elements-of-the-hierarchy)
     - [Output files](#output-files)
   - [Sample display output](#sample-display-output)
   - [Interpreting results](#interpreting-results)
+  - [Excluding physical memory addreses from Windows use](#excluding-physical-memory-addreses-from-windows-use)
+  - [Excluding physical memory addreses from Linux use](#excluding-physical-memory-addreses-from-linux-use)
   - [Files in this repo](#files-in-this-repo)
   - [Bugs and feature requests](#bugs-and-feature-requests)
   - [Donations](#donations)
@@ -384,7 +389,86 @@ graph TD
     classDef errorNode fill:#fecaca,stroke:#b91c1c,stroke-width:1px,color:#1e293b
 ```
 
-For each dump, in short: `!analyze -v` and `lm` are captured, the bugcheck code is checked against the supported list, whatever register/stack data is available for that specific code is extracted and code-specific candidates are added or excluded, every surviving virtual address is translated to a physical address via a real `!pte` leaf-PFN walk, candidates that land inside a loaded module's code/data range are discarded, and everything that's left is carried into the cross-dump correlation step once every dump has been processed.
+Yes, that's a lot of information in a small diagram, but you _can_ zoom in :)!
+
+#### Execution logic summary
+
+1. for each dump
+2. `!analyze -v` and `lm` are captured
+3. the `bugcheck code` is checked against the supported list
+4. whatever `register/stack` data is available for that `specific code` is extracted, and code-specific candidates are added or excluded
+5. every surviving `virtual address` (VA) is translated to a `physical address` (PA) via a `!pte` leaf-PFN walk (translating the VA to its exact physical RAM frame by reading the bottom-level Page Table Entry (PTE) in the hierarchy)
+6. candidates that land inside a loaded module's `code/data` range are discarded, and everything that's left is carried into the cross-dump correlation step once every dump has been processed
+
+If that's confusing, the next section _may_ help...
+
+#### Windows memory management primer
+
+A **Virtual Address (VA)** sits at the highest level of the hierarchy, as a software abstraction. Applications and the OS use VAs so they can work with a clean, continuous block of memory without needing to worry about where that data actually lives in physical hardware.
+
+When the CPU needs to access a VA, it translates it by stepping down a multi-level paging tree:
+
+1. **Control Register 3** (CR3), the CPU register holding the root pointer to PML4→
+2. **Page Map Level 4** (PML4), top-level table pointing to the PDPT →
+3. **Page Directory Pointer Table** (PDPT), directory table pointing to the PD →
+4. **Page Directory** (PD), directory table pointing to the PT →
+5. **Page Table** (PT), bottom-level table containing the leaf PTEs.
+
+Each level acts like a progressively narrower filter, much like decoding a mailing address from Country, to State, to City, to Street, guiding the CPU closer to the destination.
+
+- **Top of the tree:** the process begins at **Control Register 3 (CR3)**, a CPU hardware register storing the physical base address of the process's root page table (**PML4**)
+
+- **Bottom of the tree:** the **Page Table (PT)** is the fifth and final structure. Inside this bottom-level table sits the **Page Table Entry (PTE)**, which holds the final translation mapping
+
+Inside a PTE is the **Page Frame Number (PFN)**. This is a physical index pointing to the exact fixed-size (4KB) frame in RAM where the data lives. By combining that PFN with the original byte offset from the Virtual Address, the CPU arrives at the precise **Physical Address (PA)**, pinpointing the actual hardware location on the DIMM.
+
+Diagramatically, the full hierarchy is:
+
+```mermaid
+graph TD
+    %% 1. The Starting Level (Highest Abstraction)
+    A["Process Name (e.g., explorer.exe)"]
+    A -->|1. A specific instruction requests| B["Virtual Address (VA)"]
+
+    style A fill:#f9f,stroke:#333,stroke-width:2px;
+    style B fill:#ffd,stroke:#333;
+
+    %% 2. The Paging Hierarchy (The Translation Tree)
+    subgraph "Paging Hierarchy (CPU MMU)"
+        B -->|2a. References| C["CR3 Register (Top of Tree)"]
+        C -->|PML4 index| D["PML4 Table"]
+        D -->|PDPT index| E["Page Directory Pointer Table"]
+        E -->|PD index| F["Page Directory"]
+        F -->|PT index| G["Page Table (The Bottom)"]
+    end
+
+    %% 3. The Mapping Point (The Leaf)
+    G -->|2b. Holds the| H["PTE (Page Table Entry)"]
+    H -.->|2c. CONTAINS| I["PFN (Page Frame Number)"]
+
+    style H fill:#dff,stroke:#333,stroke-width:1.5px;
+    style I fill:#dfd,stroke:#333,stroke-width:1.5px;
+
+    %% 4. The Result (Lower Abstraction)
+    B -.->|3. Combine PFN + VA Offset| J["Physical Address (PA)"]
+    I -->|4. Index into Physical RAM| J
+
+    style J fill:#fdd,stroke:#333,stroke-width:2px;
+
+    %% 5. The Destination (Highest Abstraction)
+    J -->|5. Maps to a physical location on a| K["DIMM Module (Physical RAM)"]
+    K -->|e.g.| L["DIMM 0, Rank 0, Bank 2, Row 410, Col 12"]
+
+    style K fill:#eee,stroke:#333;
+    style L fill:#eee,stroke:#999,stroke-dasharray: 5 5;
+```
+
+#### Key elements of the hierarchy
+
+- `PML4, PDPT, PD, PT`: the multi-level tables the CPU walks through.
+- `Page Table` (the 'bottom'): this is the level 1 table, the absolute last table the CPU accesses in the walk.
+- `PTE` (Page Table Entry): this is the single, individual entry inside that bottom-level Page Table. The entire process of 'walking' the tree exists solely to find this specific entry.
+- `PFN` (Page Frame Number): this crucial index is extracted from the PTE. It tells the system, "Your data is in Physical RAM Frame number 0x1A2B."
 
 ### Output files
 
@@ -408,11 +492,30 @@ A `CrossCode` match in `PhysicalAddress-Correlations.csv` is the single stronges
 
 Neither kind of match is proof by itself. Before trusting any specific physical address enough to act on it (for example, excluding it from Windows via a bad-memory list), it's worth checking what's actually supposed to be at that address — `!pfn`, `!pool`, or `!thread` against the physical/virtual address in question will tell you whether it's a legitimate, mundane kernel object (which doesn't rule out a hardware fault, but removes one alternative explanation) or something that looks genuinely inconsistent. Re-read the [caveats](#caveats-what-dump-analysis-cannot-rule-out) section above before drawing a firm conclusion either way: this script can tell you _that_ a physical address recurs, not _which_ of the five underlying DRAM failure mechanisms would explain it, or rule out that the recurrence is coincidental.
 
+---
+
+## Excluding physical memory addreses from Windows use
+
+## Excluding physical memory addreses from Linux use
+
+---
+
 ## Files in this repo
 
-| file                                                                                                            | description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| File                                                                                                            | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| README.md                                                                                                       | this README.md file                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | [ddr5-aio-analysis.ps1](https://github.com/ExponentiallyDigital/crash_analysis/blob/main/ddr5-aio-analysis.ps1) | DDR5 "all-in-one" analysis for faulty RAM: extracts candidate corrupted-memory addresses from `KERNEL_SECURITY_CHECK_FAILURE` (0x139), `SYSTEM_SERVICE_EXCEPTION` (0x3b), `SYSTEM_THREAD_EXCEPTION_NOT_HANDLED` (0x7e), `IRQL_NOT_LESS_OR_EQUAL` (0xa), `MEMORY_MANAGEMENT` (0x1a), `CRITICAL_PROCESS_DIED` (0xef), `SECURE_KERNEL_ERROR` (0x18b), and `WINLOGON_FATAL_ERROR` (0xc000021a) dumps, and correlates the resulting physical addresses (both exact matches and near misses) across multiple dump files. |
+| ddr5-aio-memory-show-exclusions.ps1                                                                             | displays currently active physical memory exclusions                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| ddr5-aio-memory-exclusions.ps1                                                                                  | sample registry entry to exclude 11 specific addresses; after rebooting, these are excluded from Windows use                                                                                                                                                                                                                                                                                                                                                                                                       |
+| ddr5-aio-memory-exclusions-eleven_addresses.reg                                                                 | the same 11 addresses, when written to the registry and after rebooting, these are excluded from Windows use                                                                                                                                                                                                                                                                                                                                                                                                       |
+| ddr5-aio-memory-exclusions-one_address.reg                                                                      | exclude a single address                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| ddr5-aio-memory-exclusions-none.reg                                                                             | deletes all existing physical memory exclusions, reboot to activate                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| crash_on_ctl_scroll.reg                                                                                         | enable the USB keyboard sequence to invoke a "MANUALLY_INITIATED_CRASH (e2)"                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| SetDumpPath.ps1                                                                                                 | script to set the dump path & file name, so dumps don't get overwritten                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| crash_dump_default.reg                                                                                          | sample default dump path entry - points to %SYSTEMROOT%\MEMORY.dmp                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| CrashDumpPathRotation.xml                                                                                       | a sample Windows Task Schedulert task to set the dump path and filename at boot time                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| crash_dump_timestamped.reg                                                                                      | a sample of having run SetDumpPath.ps1                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 
 ---
 
