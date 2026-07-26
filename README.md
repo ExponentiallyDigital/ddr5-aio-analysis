@@ -1,5 +1,8 @@
 # ddr5-aio-analysis README.md
 
+> [!TIP]
+> **`ddr5-aio-analysis.ps1`** identifies the in-RAM location of physical RAM defects through correlating the location of corrupted RAM from multiple full Windows `memory.dmp` files, translating virtual to physical addresses, and outputting results to the console and CSV files.
+
 - [ddr5-aio-analysis README.md](#ddr5-aio-analysis-readmemd)
   - [Overview](#overview)
   - [Background: why correlate physical addresses?](#background-why-correlate-physical-addresses)
@@ -18,7 +21,7 @@
     - [Prevent Windows from overwriting the last crash dump](#prevent-windows-from-overwriting-the-last-crash-dump)
       - [1. PowerShell script: `SetDumpPath.ps1`](#1-powershell-script-setdumppathps1)
       - [2. Backup your default crash settings (for reference)](#2-backup-your-default-crash-settings-for-reference)
-      - [3. Create scheduled task (`CrashDumpPathRotation`)](#3-create-scheduled-task-crashdumppathrotation)
+      - [3. Create scheduled task (`CrashDumpPathRotation.xml`)](#3-create-scheduled-task-crashdumppathrotationxml)
       - [4. Test crash dump creation](#4-test-crash-dump-creation)
   - [Running the analysis](#running-the-analysis)
     - [Supported stop codes](#supported-stop-codes)
@@ -30,9 +33,13 @@
     - [Output files](#output-files)
   - [Sample display output](#sample-display-output)
   - [Interpreting results](#interpreting-results)
-  - [Excluding physical memory addreses from Windows use](#excluding-physical-memory-addreses-from-windows-use)
+  - [Excluding physical memory addresses from Windows use](#excluding-physical-memory-addresses-from-windows-use)
+    - [BcdEdit](#bcdedit)
+    - [WHEA registry records](#whea-registry-records)
   - [Excluding physical memory addreses from Linux use](#excluding-physical-memory-addreses-from-linux-use)
   - [Files in this repo](#files-in-this-repo)
+  - [Addendum - Accelerated crash time](#addendum---accelerated-crash-time)
+  - [Addendum - Windows memory patterns](#addendum---windows-memory-patterns)
   - [Bugs and feature requests](#bugs-and-feature-requests)
   - [Donations](#donations)
   - [Support](#support)
@@ -72,13 +79,13 @@ As an intellectual challenge I wanted to find, if possible, commonalities betwee
 
 ### What we can't ascertain
 
-| Mechanism                 | Fault Description                                                                                             | What you'd see in dumps                                                   |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| tRFC violation            | Refresh issued too fast for defective row to recover; happens after N refreshes due to cumulative charge loss | Random physical addresses, no XOR pattern, no duplicate data              |
-| Bank group decoder fault  | Refresh targets wrong bank group; happens at fixed refresh count if bank counter is defective                 | Scattered physical addressess, possibly in same bank-group-aligned region |
-| Sense amplifier failure   | The sense amp for a specific row/bank fails after N activations                                               | Same row or adjacent rows, but data is garbage not copied                 |
-| Word-line stuck-on        | A word-line remains activated, corrupting adjacent rows via charge sharing                                    | Adjacent-row pattern, but not identical data                              |
-| On-die ECC scrubber fault | DDR5's ECC scrubber activates at refresh time and writes wrong data                                           | Random pattern, no address correlation                                    |
+|Mechanism|Fault Description|What you'd see in dumps|
+|-------------------------|-------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------|
+|tRFC violation|Refresh issued too fast for defective row to recover; happens after N refreshes due to cumulative charge loss|Random physical addresses, no XOR pattern, no duplicate data|
+|Bank group decoder fault|Refresh targets wrong bank group; happens at fixed refresh count if bank counter is defective|Scattered physical addressess, possibly in same bank-group-aligned region|
+|Sense amplifier failure|The sense amp for a specific row/bank fails after N activations|Same row or adjacent rows, but data is garbage not copied|
+|Word-line stuck-on|A word-line remains activated, corrupting adjacent rows via charge sharing|Adjacent-row pattern, but not identical data|
+|On-die ECC scrubber fault|DDR5's ECC scrubber activates at refresh time and writes wrong data|Random pattern, no address correlation|
 
 ### Caveats: what dump analysis cannot rule out
 
@@ -136,7 +143,7 @@ Memory interleaving is known by several names across different BIOS systems and 
 
 Look under the **AMD CBS** (Core Complex System) menu:
 
-> `Advanced` $\rightarrow$ `AMD CBS` $\rightarrow$ `DRAM Controller Configuration` or `Data Fabric Options`
+> `Advanced` → `AMD CBS` → `DRAM Controller Configuration` or `Data Fabric Options`
 
 - Common options: **Memory Interleaving**, **Memory Interleaving Size** (e.g., 256B, 512B, 1KB, Auto), or **Channel Interleaving Hash**.
 
@@ -144,7 +151,7 @@ Look under the **AMD CBS** (Core Complex System) menu:
 
 Look under the primary memory or processor configuration settings:
 
-> `Advanced` $\rightarrow$ `System Agent (SA) Configuration` $\rightarrow$ `Memory Configuration`
+> `Advanced` → `System Agent (SA) Configuration` → `Memory Configuration`
 
 - Common options: **Channel Interleaving**, **IMC Interleaving**, or **Sub-NUMA Clustering (SNC)**.
 
@@ -156,6 +163,13 @@ Look under the primary memory or processor configuration settings:
 
 ### Prevent Windows from overwriting the last crash dump
 
+Included in this repo are samples of the below files:
+
+1. `SetDumpPath.ps1` - sets the dump filename to the current date & time (as at boot time) with `crash_dump_timestamped.reg` as a sample of having run `SetDumpPath.ps1`
+2. `crash_dump_default.reg` - backup default dump filename
+3. `CrashDumpPathRotation.xml` - scheudled task to run `SetDumpPath.ps1` at boot
+4. `crash_on_ctl_scroll.reg` - enable a manually initiated crash dump,
+
 Windows always overwrites the last crash dump file. By design, Windows has no native method to prevent this. The only practical workaround is to dynamically change the dump filename on every boot.
 
 #### 1. PowerShell script: `SetDumpPath.ps1`
@@ -166,7 +180,7 @@ $DumpRoot = "C:\CrashDumps"
 
 # Ensure directory exists
 if (!(Test-Path $DumpRoot)) {
-    New-Item -ItemType Directory -Path $DumpRoot | Out-Null
+    New-Item -ItemType Directory -Path $DumpRoot| Out-Null
 }
 
 # Generate unique filename
@@ -208,7 +222,7 @@ Windows Registry Editor Version 5.00
 "AlwaysKeepMemoryDump"=dword:00000000
 ```
 
-#### 3. Create scheduled task (`CrashDumpPathRotation`)
+#### 3. Create scheduled task (`CrashDumpPathRotation.xml`)
 
 Scheduled a task to run SetDumpPath.ps1 at boot which ensure that at every boot time the dump file name gets updated, alter the path below according to where you put the SetDumpPath.ps1 script.
 
@@ -268,30 +282,34 @@ Once you have a folder of full kernel dumps collected using the rotation setup a
 
 ### Supported stop codes
 
-The script recognises eight Windows stop codes. Each one reaches `KeBugCheckEx` differently, so each is handled with a method matched to what that specific bugcheck actually gives you — not every code produces a `TRAP_FRAME:`/`CONTEXT:` register block, and not every documented argument is safe to treat as an address.
+The script recognises eight Windows stop codes. Each one reaches `KeBugCheckEx` differently, so each is handled with a method matched to what that specific bugcheck actually gives you as not every code produces a `TRAP_FRAME:`/`CONTEXT:` register block, and not every documented argument is safe to treat as an address.
 
-| Code         | Name                                | Register block | Notes                                                                                                                                                                                                                                 |
-| ------------ | ----------------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `0x139`      | KERNEL_SECURITY_CHECK_FAILURE       | `TRAP_FRAME:`  | P1–P4 excluded (debugger self-reference addresses)                                                                                                                                                                                    |
-| `0x3b`       | SYSTEM_SERVICE_EXCEPTION            | `CONTEXT:`     | P1–P4 excluded                                                                                                                                                                                                                        |
-| `0x7e`       | SYSTEM_THREAD_EXCEPTION_NOT_HANDLED | `CONTEXT:`     | P1–P4 excluded                                                                                                                                                                                                                        |
-| `0xa`        | IRQL_NOT_LESS_OR_EQUAL              | `TRAP_FRAME:`  | Arg1 ("memory referenced") added as a candidate; P1–P4 also excluded as bookkeeping                                                                                                                                                   |
-| `0x1a`       | MEMORY_MANAGEMENT                   | none (usually) | Only subtype `0x41790` is handled: the true corrupted PFN is computed as `(Arg2 - MmPfnDatabase) / sizeof(_MMPFN)`, not read via `!pte`                                                                                               |
-| `0xef`       | CRITICAL_PROCESS_DIED               | none           | Arg1/Arg3 (process or thread object) added as candidates                                                                                                                                                                              |
-| `0x18b`      | SECURE_KERNEL_ERROR                 | none           | Arguments are not officially documented by Microsoft; candidates come from `STACK_TEXT` only and are tagged low-confidence                                                                                                            |
-| `0xc000021a` | WINLOGON_FATAL_ERROR                | none           | Arg1 (string pointer) added as a candidate; Arg2 (a sign-extended NTSTATUS) is explicitly excluded since it coincidentally matches the canonical-kernel-address pattern; Arg3/Arg4 are typically user-mode addresses and out of scope |
+|Code|Name|Register block|Notes|
+|:--:|----|:------------:|-----|
+|`0x139`|KERNEL_SECURITY_CHECK_FAILURE|`TRAP_FRAME:`|P1–P4 excluded (debugger self-reference addresses)|
+|`0x3b`|SYSTEM_SERVICE_EXCEPTION|`CONTEXT:`|P1–P4 excluded|
+|`0x7e`|SYSTEM_THREAD_EXCEPTION_NOT_HANDLED|`CONTEXT:`|P1–P4 excluded|
+|`0xa`|IRQL_NOT_LESS_OR_EQUAL|`TRAP_FRAME:`|Arg1 ("memory referenced") added as a candidate; P1–P4 also excluded as bookkeeping|
+|`0x1a`|MEMORY_MANAGEMENT|none (usually)|Only subtype `0x41790` is handled: the true corrupted PFN is computed as `(Arg2 - MmPfnDatabase) / sizeof(_MMPFN)`, not read via `!pte`|
+|`0xef`|CRITICAL_PROCESS_DIED|none|Arg1/Arg3 (process or thread object) added as candidates|
+|`0x18b`|SECURE_KERNEL_ERROR|none|Arguments are not officially documented by Microsoft; candidates come from `STACK_TEXT` only and are tagged low-confidence|
+|`0xc000021a`|WINLOGON_FATAL_ERROR|none|Arg1 (string pointer) added as a candidate; Arg2 (a sign-extended NTSTATUS) is explicitly excluded since it coincidentally matches the canonical-kernel-address pattern; Arg3/Arg4 are typically user-mode addresses and out of scope|
 
 ### Usage
 
 ```powershell
 .\ddr5-aio-analysis.ps1 `
-    -DumpFolder "C:\CrashDumps" `
-    -OutputFolder "C:\CrashDumps\Analysis" `
-    -ProximityThresholdBytes 0x1000
+    [-DumpFolder "C:\CrashDumps"] `
+    [-OutputFolder "C:\CrashDumps\Analysis"] `
+    [-ProximityThresholdBytes 0x1000] `
+    [-VerboseOnTimeout] `
 ```
 
 `-CDB` and `-SymbolPath` only need overriding if your WinDbg install isn't in your path or your symbol cache lives somewhere other than the default described in [Prerequisites](#prerequisites).
 `-ProximityThresholdBytes` controls how close two physical addresses from different dumps have to be to count as a near-match (default `0x10000`; tighten this as your dump count grows, since a wide threshold on a large dump set produces a lot of coincidental pairings — see [Interpreting results](#interpreting-results)).
+`-VerboseOnTimeout` displays all raw output from `cdb.exe` for use in situations where cdb execution exceeds 240s.
+
+If required parameters are not supplied, they are prompted for.
 
 ### How it works
 
@@ -408,7 +426,7 @@ A **Virtual Address (VA)** sits at the highest level of the hierarchy, as a soft
 
 When the CPU needs to access a VA, it translates it by stepping down a multi-level paging tree:
 
-1. **Control Register 3** (CR3), the CPU register holding the root pointer to PML4→
+1. **Control Register 3** (CR3), the CPU register holding the root pointer to PML4 →
 2. **Page Map Level 4** (PML4), top-level table pointing to the PDPT →
 3. **Page Directory Pointer Table** (PDPT), directory table pointing to the PD →
 4. **Page Directory** (PD), directory table pointing to the PT →
@@ -482,40 +500,141 @@ The script writes four CSVs to `-OutputFolder`:
 ## Sample display output
 
 <figure align="center">
-  <img src="ddr5-aio-analysis.ss1.png" alt="Main menu" width="100%">
+  <img src="ddr5-aio-analysis.ss1.png" alt="Console output" width="100%">
   <figcaption>Console output</figcaption>
 </figure>
 
 ## Interpreting results
 
-A `CrossCode` match in `PhysicalAddress-Correlations.csv` is the single strongest signal this script can produce, precisely because it doesn't depend on any theory about _why_ two crashes would share a location — an access violation and a LIST_ENTRY corruption have no structural reason to land on the same physical page unless something at that page is actually implicated. A `SameCode` match is weaker, since it has a mundane alternative explanation: similar allocator behaviour, similar call paths, or similar stack layout across similar crashes can produce a shared address with nothing wrong with the hardware at all.
+A `CrossCode` match in `PhysicalAddress-Correlations.csv` is the single strongest signal that `ddr5-aio-analysis.ps1` can produce, precisely because it doesn't depend on any theory about _why_ two crashes would share a location: an `access violation` and a `LIST_ENTRY` corruption have no structural reason to land on the same physical page unless something at that page is actually implicated. A `SameCode` match is weaker, since it has a mundane alternative explanation: similar allocator behaviour, similar call paths, or similar stack layout across similar crashes can produce a shared address with nothing wrong with the hardware at all.
 
-Neither kind of match is proof by itself. Before trusting any specific physical address enough to act on it (for example, excluding it from Windows via a bad-memory list), it's worth checking what's actually supposed to be at that address — `!pfn`, `!pool`, or `!thread` against the physical/virtual address in question will tell you whether it's a legitimate, mundane kernel object (which doesn't rule out a hardware fault, but removes one alternative explanation) or something that looks genuinely inconsistent. Re-read the [caveats](#caveats-what-dump-analysis-cannot-rule-out) section above before drawing a firm conclusion either way: this script can tell you _that_ a physical address recurs, not _which_ of the five underlying DRAM failure mechanisms would explain it, or rule out that the recurrence is coincidental.
+Neither kind of match is proof by itself. Before trusting any specific physical address enough to act on it, for example excluding it from Windows via a bad-memory list, see [Excluding physical memory addresses from Windows use](#excluding-physical-memory-addresses-from-windows-use), it's worth checking what's actually supposed to be at that address: `!pfn`, `!pool`, or `!thread` against the physical/virtual address in question will tell you whether it's a legitimate, mundane kernel object (which doesn't rule out a hardware fault, but removes one alternative explanation) or something that looks genuinely inconsistent. Re-read the [caveats](#caveats-what-dump-analysis-cannot-rule-out) section above before drawing a firm conclusion either way: this script can tell you _that_ a physical address recurs, not _which_ of the underlying DRAM failure mechanisms would explain it, or rule out that the recurrence is coincidental.
 
 ---
 
-## Excluding physical memory addreses from Windows use
+## Excluding physical memory addresses from Windows use
+
+There are two ways to do this.
+
+1. BcdEdit has existed for some time and allows you to set boot time options. These parameters are passed to the kernel on boot, much like Linux and take effect verfy early in the boot process. These records are written to
+2. Enterprise/server class systems with ECC RAM use WHEA records that are populated automagically by firmware when errors are detected. These records are written to the registry. However, these load late in the Windows startup sequence.
+
+ddr5-aio-memory-exclusions.ps1
+ddr5-aio-memory-exclusions-eleven_addresses.reg
+ddr5-aio-memory-exclusions-none.reg
+ddr5-aio-memory-exclusions-one_address.reg
+ddr5-aio-memory-show-exclusions.ps1
+
+To include a 1 page buffer before and after, and to reduce memory fragmentation (44 KB total RAM lost, 11 pages):
+
+	Cluster 1
+		○ 0x125A0D → Buffer (1 page before)
+		○ 0x125A0E → Bad
+		○ 0x125A0F → Bad
+		○ 0x125A10 → buffer between bad pages
+		○ 0x125A11 → buffer between bad pages
+		○ 0x125A12 → Bad
+		○ 0x125A13 → Bad
+		○ 0x125A14 → Buffer (1 page after)
+	Cluster 2
+		○ 0x13C840 → Buffer (1 page before)
+		○ 0x13C841 → Bad
+0x13C842 → Buffer (1 page after)
+
+Exclude addresses with:
+	bcdedit /set {badmemory} badmemoryaccess no
+	bcdedit /set {badmemory} badmemorylist 0x125A0D 0x125A0E 0x125A0F 0x125A10 0x125A11 0x125A12 0x125A13 0x125A14 0x13C840 0x13C841 0x13C842
+
+To delete all entries use:
+	bcdedit /deletevalue {badmemory} badmemorylist
+	bcdedit /deletevalue {badmemory} badmemoryaccess
+
+Display excluded ranges
+bcdedit /enum {badmemory}
+
+### BcdEdit
+
+
+### WHEA registry records
+
+Confirming memory address exclusions
 
 ## Excluding physical memory addreses from Linux use
+
+...to be added...
 
 ---
 
 ## Files in this repo
 
-| File                                                                                                            | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| README.md                                                                                                       | this README.md file                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| [ddr5-aio-analysis.ps1](https://github.com/ExponentiallyDigital/crash_analysis/blob/main/ddr5-aio-analysis.ps1) | DDR5 "all-in-one" analysis for faulty RAM: extracts candidate corrupted-memory addresses from `KERNEL_SECURITY_CHECK_FAILURE` (0x139), `SYSTEM_SERVICE_EXCEPTION` (0x3b), `SYSTEM_THREAD_EXCEPTION_NOT_HANDLED` (0x7e), `IRQL_NOT_LESS_OR_EQUAL` (0xa), `MEMORY_MANAGEMENT` (0x1a), `CRITICAL_PROCESS_DIED` (0xef), `SECURE_KERNEL_ERROR` (0x18b), and `WINLOGON_FATAL_ERROR` (0xc000021a) dumps, and correlates the resulting physical addresses (both exact matches and near misses) across multiple dump files. |
-| ddr5-aio-memory-show-exclusions.ps1                                                                             | displays currently active physical memory exclusions                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| ddr5-aio-memory-exclusions.ps1                                                                                  | sample registry entry to exclude 11 specific addresses; after rebooting, these are excluded from Windows use                                                                                                                                                                                                                                                                                                                                                                                                       |
-| ddr5-aio-memory-exclusions-eleven_addresses.reg                                                                 | the same 11 addresses, when written to the registry and after rebooting, these are excluded from Windows use                                                                                                                                                                                                                                                                                                                                                                                                       |
-| ddr5-aio-memory-exclusions-one_address.reg                                                                      | exclude a single address                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| ddr5-aio-memory-exclusions-none.reg                                                                             | deletes all existing physical memory exclusions, reboot to activate                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| crash_on_ctl_scroll.reg                                                                                         | enable the USB keyboard sequence to invoke a "MANUALLY_INITIATED_CRASH (e2)"                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| SetDumpPath.ps1                                                                                                 | script to set the dump path & file name, so dumps don't get overwritten                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| crash_dump_default.reg                                                                                          | sample default dump path entry - points to %SYSTEMROOT%\MEMORY.dmp                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| CrashDumpPathRotation.xml                                                                                       | a sample Windows Task Schedulert task to set the dump path and filename at boot time                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| crash_dump_timestamped.reg                                                                                      | a sample of having run SetDumpPath.ps1                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+|File|Description|
+|----|-----------|
+|README.md|this README.md file|
+|[ddr5-aio-analysis.ps1](https://github.com/ExponentiallyDigital/crash_analysis/blob/main/ddr5-aio-analysis.ps1)|DDR5 "all-in-one" analysis for faulty RAM: extracts candidate corrupted-memory addresses from `KERNEL_SECURITY_CHECK_FAILURE` (0x139), `SYSTEM_SERVICE_EXCEPTION` (0x3b), `SYSTEM_THREAD_EXCEPTION_NOT_HANDLED` (0x7e), `IRQL_NOT_LESS_OR_EQUAL` (0xa), `MEMORY_MANAGEMENT` (0x1a), `CRITICAL_PROCESS_DIED` (0xef), `SECURE_KERNEL_ERROR` (0x18b), and `WINLOGON_FATAL_ERROR` (0xc000021a) dumps, and correlates the resulting physical addresses (both exact matches and near misses) across multiple dump files.|
+|ddr5-aio-memory-show-exclusions.ps1|displays currently active physical memory exclusions|
+|ddr5-aio-memory-exclusions.ps1|sample registry entry to exclude 11 specific addresses; after rebooting, these are excluded from Windows use|
+|ddr5-aio-memory-exclusions-eleven_addresses.reg|the same 11 addresses, when written to the registry and after rebooting, these are excluded from Windows use|
+|ddr5-aio-memory-exclusions-one_address.reg|exclude a single address|
+|ddr5-aio-memory-exclusions-none.reg|deletes all existing physical memory exclusions, reboot to activate|
+|crash_on_ctl_scroll.reg|enable the USB keyboard sequence to invoke a "MANUALLY_INITIATED_CRASH (e2)"|
+|SetDumpPath.ps1|script to set the dump path & file name, so dumps don't get overwritten|
+|crash_dump_default.reg|sample default dump path entry - points to %SYSTEMROOT%\MEMORY.dmp|
+|CrashDumpPathRotation.xml|a sample Windows Task Schedulert task to set the dump path and filename at boot time|
+|crash_dump_timestamped.reg|a sample of having run SetDumpPath.ps1|
+
+---
+
+## Addendum - Accelerated crash time
+
+For my specific environment, I can vary T1/T2 since uptime scales with tREFI. This saves having to wait many, many days to get a usable sample of dump files for analysis. A crash time of ~5h 55m (T2) occurs repeatably with optimised BIOS defaults which sets `bank refresh mode = auto`, and EXPOII which sets `tREFI = 11,677`, optimised BIOS defaults also sets `bank refresh mode` to `mixed`:
+
+<figure align="center">
+  <img src="ZenTimings_Screenshot_29751131.1355425.png" alt="ZenTimings" width="60%">
+  <figcaption>ZenTimings</figcaption>
+</figure>
+
+
+
+Based on the observed linearity of crash timing when tREFI is manually set, we can deduce an actual crash time, and when paired with an observed crash time at that setting, this gives us:
+
+|tREFI setting|tREFI % change from auto|Expected crash time|Actual crash time|difference (expected vs actual)|
+|:-----------:|:----------------------:|:-----------------:|:---------------:|:-----------------------------:|
+|23,354       |100%                    |23:40:17           |23:38:36         |-0.12%                         |
+|16,348       |50%                     |16:34:13           |16:33:02         |-0.12%                         |
+|14,597       |25%                     |14:47:44           |14:46:41         |-0.12%                         |
+|11,677       |0% (auto)               |11:50:09           |11:49:16         |-0.12%                         |
+|8,758        |-25%                    |08:52:37           |08:51:56         |-0.13%                         |
+|5,839        |-50%                    |05:55:06           |05:54:30         |-0.17%                         |
+|3,900        |-66.6%                  |03:57:11           |01:58:11         |-50.08%                        |
+
+**NB** all the above values, except the `tREFI=3,900` row were obtained from test runs with `bank refresh mode = normal` which doubles uptime from `bank refresh mode = auto (mixed)` (the BIOS default when set to `auto`). The **actual crash time** for `tREFI=3,900` was obtained from 3 runs with `bank refresh mode = auto (mixed)`, resulting in these values:
+
+<figure align="center">
+  <img src="ZenTimings_Screenshot_tREFI=3900.png" alt="ZenTimings - low tREFI" width="60%">
+  <figcaption>ZenTimings - low tREFI</figcaption>
+</figure>
+
+I tried 3,900 as a starting point for accelereted dump generation, which is -66.6% of the default. However, observed uptime from three test runs only averaged 1:58:32.442. It did though generated three dump files with `KERNEL_SECURITY_CHECK_FAILURE (139)` stop codes with one of the three dumps corrupted (dump failed with error code 0x0, completion of 95%). It also broke the linearity model showing a 50% difference between expected and observed, probably due to command bus saturation from the sheer volume of refresh events occuring. So, time to revert back to default `tREFI` which gives uptime of T2 (5h 55m), this is _bearable_ with ~4 dump files generated per day.s
+
+## Addendum - Windows memory patterns
+
+For completeness, Windows has debug “magic numbers” (fill patterns) used by the C runtime (CRT) debug heap, the Windows heap manager, kernel pool allocator, and compiler runtime checks. They make memory corruption, use-after-free, and uninitialized-variable bugs easier to find in a debugger.
+
+However, they only exist in debug builds linked against the debug CRT and not in retail/release versions of Windows. Some doumentation refers to them as active when page-heap or Application Verifier is enabled. See [CRT debug heap details (Microsoft Learn)](https://learn.microsoft.com/en-us/cpp/c-runtime-library/crt-debug-heap-details).
+
+|Pattern|Description|Context|
+|-------|-----------|-------|
+|0xDEADBEEF|Freed memory / bad memory marker|General freed memory indicator|
+|0xBAADF00D|Uninitialized local variables|Microsoft debug heap (user-mode), seen after `HeapAlloc` / `LocalAlloc` before the application writes to the block|
+|0xFEEDF00D|Freed heap memory|Heap allocator marker|
+|0xDEADC0DE|Freed memory marker|Alternative freed memory indicator|
+|0xCCCCCCCC|Uninitialized stack memory|Visual Studio/RTC compiler option, `0xCC` is also the INT 3 breakpoint instruction|
+|0xCDCDCDCD|Uninitialized heap memory|“clean” allocated memory but never written by the app|
+|0xDDDDDDDD|Freed heap memory|CRT heap, “dead” memory which helps catch writes through dangling pointers|
+|0xFDFDFDFD|Guard bytes after heap blocks|Heap no-man's-land, 4-byte buffers placed before and after the user’s allocation to catch buffer over/underruns|
+|0xFEEEFEEE|Freed pool marker|Freed memory still in pool, seen after `HeapFree` / `LocalFree` when a debugger is attached|
+|0xABABABAB|Kernel pool memory after free|Windows kernel pool allocator, often appears as trailing guard or free-pool marker|
+|0xA5A5A5A5|Heap slack space / alignment padding|Heap allocator padding, fills unused bytes between the requested size and the actual rounded-up allocation size|
 
 ---
 

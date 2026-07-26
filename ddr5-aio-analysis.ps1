@@ -14,13 +14,32 @@
    SYSTEM_THREAD_EXCEPTION_NOT_HANDLED (0x7e) - 1 historical incidences, 1 retained dump
    WINLOGON_FATAL_ERROR (0xc000021a)
 
-  Does not yet cater for:
-  ...
+  Does not cater for:
+   FAULTY_HARDWARE_CORRUPTED_PAGE (12b) - 1 historical occurence, 0 retained dumps
+   HYPERVISOR_ERROR (20001) - 1 historical occurence, 0 retained dumps
 
 .BACKLOG to do
   - ...placeholder...
 
 .NOTES
+v0.4.2 Added -AnalyzeTimeoutSeconds (default 240, unchanged). A dump that
+  crashed in an unusually symbol-heavy process context (eg explorer.exe
+  pulling in the full Windows Shell/XAML/CoreMessaging stack - 100+
+  modules needing first-time PDB downloads) can genuinely take longer
+  than 240s for !analyze -v to complete on a cold local symbol cache,
+  with nothing actually hung. This isn't a process-handling bug: a bare
+  cdb run of the identical .symfix/.reload /f/!analyze -v/lm sequence,
+  with no timeout at all, completed successfully but slowly on such a
+  dump. Bumping this parameter for a specific heavy dump (or just
+  re-running once the local symbol cache is warm) resolves it without
+  editing the script.
+v0.4.1 Added -VerboseOnTimeout switch. When a cdb call times out, this
+  echoes the full raw stdout/stderr captured before the kill straight to
+  the console - unfiltered, including the noisy symbol-load dots and any
+  retry spam that would normally be stripped out. Useful for diagnosing
+  why one specific dump hangs (eg a corrupt module list) while another
+  dump of the same bugcheck code processes cleanly, without needing to
+  re-run manually in a separate cdb session.
 v0.4.0 Added 0xc000021a (WINLOGON_FATAL_ERROR). Not exception-based (no
   TRAP_FRAME/CONTEXT block). Arg1 is documented ("string that identifies
   the problem") and a genuine kernel VA, so it's added as a candidate like
@@ -115,7 +134,9 @@ param(
     [string]$OutputFolder,
     [string]$CDB = "C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe",
     [string]$SymbolPath = "srv*C:\Symbols*https://msdl.microsoft.com/download/symbols",
-    [int64]$ProximityThresholdBytes = 0x10000
+    [int64]$ProximityThresholdBytes = 0x10000,
+    [switch]$VerboseOnTimeout,
+    [int]$AnalyzeTimeoutSeconds = 240
 )
 
 $SupportedBugChecks = @("0x139", "0x3b", "0x7e", "0x1a", "0xef", "0xa", "0x18b", "0xc000021a")
@@ -183,6 +204,25 @@ function Invoke-Cdb {
             Write-Host "    [TIMEOUT] cdb exceeded ${TimeoutSeconds}s - killing it, using whatever output was captured so far." -ForegroundColor DarkYellow
             try { $proc.Kill() } catch { }
             $proc.WaitForExit(5000) | Out-Null
+
+            # -VerboseOnTimeout dumps everything cdb had actually printed up
+            # to the moment it was killed - unfiltered, including the noisy
+            # symbol-load dots and retry spam that Invoke-Cdb's return value
+            # normally strips out. That's exactly the detail that matters
+            # when diagnosing WHY a specific dump hangs (eg a corrupt module
+            # list sending cdb into a GetContextState retry loop) versus
+            # another dump of the same bugcheck code processing cleanly.
+            if ($VerboseOnTimeout) {
+                Write-Host "    ----- BEGIN raw cdb stdout captured before timeout -----" -ForegroundColor Magenta
+                Write-Host $stdoutBuilder.ToString()
+                Write-Host "    ----- END raw cdb stdout -----" -ForegroundColor Magenta
+                $stderrText = $stderrBuilder.ToString()
+                if ($stderrText.Trim().Length -gt 0) {
+                    Write-Host "    ----- BEGIN raw cdb stderr captured before timeout -----" -ForegroundColor Magenta
+                    Write-Host $stderrText
+                    Write-Host "    ----- END raw cdb stderr -----" -ForegroundColor Magenta
+                }
+            }
         }
     } finally {
         Unregister-Event -SourceIdentifier $outEvent.Name -ErrorAction SilentlyContinue
@@ -356,7 +396,7 @@ foreach ($dump in $dumps) {
     $dumpPath = $dump.FullName
     Write-Host "`n===== Processing $($dump.Name) =====" -ForegroundColor Yellow
 
-    $analyzeResult = Invoke-Cdb -DumpPath $dumpPath -Commands ".symfix; .reload /f; !analyze -v" -TimeoutSeconds 240
+    $analyzeResult = Invoke-Cdb -DumpPath $dumpPath -Commands ".symfix; .reload /f; !analyze -v" -TimeoutSeconds $AnalyzeTimeoutSeconds
     if ($analyzeResult.TimedOut) {
         Write-Host "  Note: !analyze -v didn't exit cleanly within 240s. Using the output captured before the kill." -ForegroundColor DarkYellow
     }
