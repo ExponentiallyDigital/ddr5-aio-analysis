@@ -616,7 +616,7 @@ Based on the observed linearity of crash timing when tREFI is manually set, we c
   <figcaption>ZenTimings - low tREFI</figcaption>
 </figure>
 
-I tried 3,900 as a starting point for accelereted dump generation, which is -66.6% of the default. However, observed uptime from three test runs only averaged 1:58:32.442. It did though generated three dump files with `KERNEL_SECURITY_CHECK_FAILURE (139)` stop codes with one of the three dumps corrupted (dump failed with error code 0x0, completion of 95%). It also broke the linearity model showing a 50% difference between expected and observed, probably due to command bus saturation from the sheer volume of refresh events occuring. So, time to revert back to default `tREFI` which gives uptime of T2 (5h 55m), this is _bearable_ with ~4 dump files generated per day.s
+I tried 3,900 as a starting point for accelereted dump generation, which is -66.6% of the default. However, observed uptime from three test runs only averaged 1:58:32.442. It did though generate three dump files with `KERNEL_SECURITY_CHECK_FAILURE (139)` stop codes with one of the three dumps corrupted (dump failed with error code 0x0, completion of 95%). It also broke the linearity model showing a 50% difference between expected and observed, probably due to command bus saturation from the sheer volume of refresh events occuring. So, time to revert back to default `tREFI` which gives uptime of T2 (5h 55m), this is _bearable_ with ~4 dump files generated per day.s
 
 ## Addendum - Windows memory patterns
 
