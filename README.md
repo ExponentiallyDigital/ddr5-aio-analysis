@@ -41,12 +41,12 @@
 - [12. How do you know if exclusions are working?](#12-how-do-you-know-if-exclusions-are-working)
   - [12.1. Sysinternals \`livekd'](#121-sysinternals-livekd)
   - [12.2. Sysinternal's `RAMMap`](#122-sysinternals-rammap)
-- [14. Addendum - Accelerated crash time](#14-addendum---accelerated-crash-time)
-- [15. Addendum - Windows memory patterns](#15-addendum---windows-memory-patterns)
-- [16. Bugs and feature requests](#16-bugs-and-feature-requests)
-- [17. Donations](#17-donations)
-- [18. Support](#18-support)
-- [19. License](#19-license)
+- [13. Addendum - Accelerated crash time](#13-addendum---accelerated-crash-time)
+- [14. Addendum - Windows memory patterns](#14-addendum---windows-memory-patterns)
+- [15. Bugs and feature requests](#15-bugs-and-feature-requests)
+- [16. Donations](#16-donations)
+- [17. Support](#17-support)
+- [18. License](#18-license)
 
 ---
 
@@ -621,7 +621,7 @@ It does however have a GUI for entering/checking that exclusions are working (st
   <figcaption>Exclusions</figcaption>
 </figure>
 
-(I was testing with `bcdedit` and WHEA at the same time as this screenshot, which is why the exclusions are showing here as `FAIL`)
+I was testing with `bcdedit` and WHEA at the same time as this screenshot, which is why the exclusions are showing here as `FAIL`, I believe, but see the waning in [12.1. Sysinternals \`livekd'](#121-sysinternals-livekd).
 
 ## 12. How do you know if exclusions are working?
 
@@ -676,7 +676,8 @@ Using the same memory address, after removing the exclusion and rebooting, the `
 00000001`25a1416f  ????????`???????? ????????`????????
 ```
 
-What's the difference between `!dq /p ...` and `dq /p ...`? they run the in-built command or an extension. I noticed while writing this up that I'd used different commands :/. It's possible I did a bad copy and paste to my journal or maybe I did use different commands, so you'd need to verify this yourself. When I ran them I did have all three memory exclusion methods running: WHEA registry entries, `bcdedit`, and the BadMemory kernel driver. I do know that the BadMemory driver, see screenshot above, showed a FAIL for the memory rangfe which I assumed was caise by a precidence issue in that one of the other two methods have alreday disabled access to that region.
+> [!WARNING]
+> What's the difference between `!dq /p` and `dq /p`? They run the in-built command or an extension. I noticed while writing this up that I'd used different commands :/. It's possible I did a bad copy and paste to my journal or maybe I did use different commands, so you'd need to verify this yourself. When I ran them I did have all three memory exclusion methods running: WHEA registry entries, `bcdedit`, and the BadMemory kernel driver. I do know that the BadMemory driver, see screenshot above, showed a FAIL for the memory range which I assumed was caused by a precidence issue in that one of the other two methods had alreday disabled access to that region. But this needs to be revalidated.
 
 ### 12.2. Sysinternal's `RAMMap`
 
@@ -689,7 +690,7 @@ Another [Sysinternals](https://learn.microsoft.com/en-us/sysinternals/) tool, `R
 
 ---
 
-## 14. Addendum - Accelerated crash time
+## 13. Addendum - Accelerated crash time
 
 For my specific environment, I can vary T1/T2 since uptime scales with tREFI. This saves having to wait many, many days to get a usable sample of dump files for analysis. A crash time of ~5h 55m (T2) occurs repeatably with optimised BIOS defaults which sets `bank refresh mode = auto`, and EXPOII which sets `tREFI = 11,677`, optimised BIOS defaults also sets `bank refresh mode` to `mixed`:
 
@@ -719,7 +720,7 @@ Based on the observed linearity of crash timing when tREFI is manually set, we c
 
 I tried 3,900 as a starting point for accelereted dump generation, which is -66.6% of the default. However, observed uptime from three test runs only averaged 1:58:32.442. It did though generate three dump files with `KERNEL_SECURITY_CHECK_FAILURE (139)` stop codes with one of the three dumps corrupted (dump failed with error code 0x0, completion of 95%). It also broke the linearity model showing a 50% difference between expected and observed, probably due to command bus saturation from the sheer volume of refresh events occuring. So, time to revert back to default `tREFI` which gives uptime of T2 (5h 55m), this is _bearable_ with ~4 dump files generated per day.s
 
-## 15. Addendum - Windows memory patterns
+## 14. Addendum - Windows memory patterns
 
 For completeness, Windows has debug “magic numbers” (fill patterns) used by the C runtime (CRT) debug heap, the Windows heap manager, kernel pool allocator, and compiler runtime checks. They make memory corruption, use-after-free, and uninitialized-variable bugs easier to find in a debugger.
 
@@ -741,25 +742,25 @@ However, they only exist in debug builds linked against the debug CRT and not in
 
 ---
 
-## 16. Bugs and feature requests
+## 15. Bugs and feature requests
 
 Found a bug or want to request a feature? [Open an issue here](https://github.com/ExponentiallyDigital/ddr5-aio-analysis/issues).
 
 ---
 
-## 17. Donations
+## 16. Donations
 
 Kindly consider a [PayPal](https://www.paypal.com/donate/?hosted_button_id=QJYPGRLG2RPBS) or [Patreon](https://www.patreon.com/cw/ExponentiallyDigital) donation to help support development.
 
 ---
 
-## 18. Support
+## 17. Support
 
 This tool is unsupported and may cause objects in mirrors to be closer than they appear. Batteries not included.
 
 ---
 
-## 19. License
+## 18. License
 
 This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
 
@@ -768,3 +769,5 @@ This program is distributed in the hope that it will be useful, but WITHOUT ANY 
 You should have received a copy of the GNU General Public License along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 Copyright (C) 2026 Andrew Newbury.
+
+

@@ -19,14 +19,14 @@ Copyright (C) 2026 Andrew Newbury, Exponentially Digital.
  Extracts candidate corrupted-memory addresses from these dump types and correlates the resulting
  physical addresses, both exact matches and near misses, across multiple dump files:
   
-   KERNEL_SECURITY_CHECK_FAILURE (0x139) - 30 historical incidences, 3 retained dumps
+   KERNEL_SECURITY_CHECK_FAILURE (0x139) - 4 historical incidences, 6 retained dumps
    IRQL_NOT_LESS_OR_EQUAL (a) - 11 historical incidences, 1 retained dump
    SECURE_KERNEL_ERROR (18b) - 6 historical incidences, 1 retained dumps  - low confidence; see v0.3.0 notes below
-   SYSTEM_SERVICE_EXCEPTION (0x3b) - 5 historical incidences, 2 retained dump
+   SYSTEM_SERVICE_EXCEPTION (0x3b) - 7 historical incidences, 3 retained dump
    CRITICAL_PROCESS_DIED (ef) - 3 historical incidences, 1 retained dumps 
    MEMORY_MANAGEMENT (0x1a) - 3 historical incidences, 1 retained dump
    SYSTEM_THREAD_EXCEPTION_NOT_HANDLED (0x7e) - 1 historical incidences, 1 retained dump
-   WINLOGON_FATAL_ERROR (0xc000021a)
+   WINLOGON_FATAL_ERROR (0xc000021a) - 1 historical incidences, 1 retained dump
 
   Does not cater for:
    FAULTY_HARDWARE_CORRUPTED_PAGE (12b) - 1 historical occurence, 0 retained dumps
@@ -44,10 +44,53 @@ Copyright (C) 2026 Andrew Newbury, Exponentially Digital.
  -VerboseOnTimeout - displays all raw output from `cdb.exe` for use in situations where cdb execution exceeds 240s.
 
 .BACKLOG
-  - add 0x200001and 0x12b stop codes
+  - add 0x200001and 0x12b stop code(s)
+  - FIX overflow when processing FullDump_20260725_081904-a_IRQL_NOT_LESS_OR_EQUAL.dmp
+    error is: "Exception calling "ToInt64" with "2" argument(s): "Value was either too
+    large or too small for a UInt64."
   
 .NOTES
 .VERSION
+v0.6.0 Two fixes, both prompted by a direct question about whether step 6
+  of the execution-logic summary (module-range filtering) was discarding
+  candidates it shouldn't, and whether Windows actually hands us a
+  corrupted address for every code the way it does for 0x1a's subtype
+  0x41790.
+
+  Fix 1: Is-InAnyModule was excluding any candidate whose VA fell
+  ANYWHERE within a loaded module's [start,end) range from lm - but that
+  range covers a module's entire image, code AND data sections alike.
+  This correctly dropped return addresses and rip (code, uninteresting),
+  but also silently dropped legitimate driver DATA (globals, cached
+  pointers, static tables) sitting in the same module - exactly the kind
+  of place real corruption could land. Replaced with exact-value
+  exclusion: only rip (from TRAP_FRAME/CONTEXT) and each STACK_TEXT
+  frame's specific return address are excluded now, via a new
+  Get-CandidatesFromStackTextLines that parses STACK_TEXT column-by-
+  column (ChildSP / RetAddr / four Args / symbol) instead of broad-
+  scanning every hex token on the line - the same class of fix as the
+  dps address-column bug fixed earlier, just for STACK_TEXT's ChildSP and
+  RetAddr columns. A candidate that still falls within a module's range
+  is no longer discarded; Get-ModuleNameForVA now tags it with which
+  module instead, so the reader can weigh it rather than never seeing it.
+
+  Fix 2: introduced a third tier, "FaultTargetAddress", for values
+  Windows explicitly computed and reported as the address a faulting
+  access referenced - stronger than a value merely found nearby
+  (ContextPointer), but not asserted by Microsoft to BE the corrupted
+  page the way 0x1a subtype 0x41790's computed PFN is
+  (ConfirmedPhysicalFault) - a faulting access can validly target a
+  perfectly healthy page that a corrupted POINTER merely pointed at, so
+  this tier is evidence of relevance, not proof of a physical defect.
+  Populated two ways: an unconditional search of !analyze -v's own output
+  for "Attempt to (read|write|execute) from address X" (the exact line
+  Windows prints from an access-violation EXCEPTION_RECORD - present for
+  0x7e, absent for 0x3b which has no separate exception record, and
+  absent for 0x139 whose FAST_FAIL exception carries no memory-address
+  parameter), and 0xa's Arg1 ("memory referenced"), which was already
+  being added as a candidate but had never been tagged above the generic
+  ContextPointer tier despite being an equally explicit, Windows-reported
+  value.
 v0.5.0 Two changes, both prompted by the same run producing different
   candidate counts (35 vs 28, 52 vs 50, etc.) across two back-to-back
   executions over the identical dump folder with no script changes
@@ -456,6 +499,20 @@ function Is-InAnyModule([int64]$vaInt, $moduleRanges) {
     return $false
 }
 
+# v0.6.0: no longer used to discard candidates outright (see main loop) -
+# a module's [start,end) range from lm covers its ENTIRE image, code and
+# data alike, so blanket-discarding anything in that range also discarded
+# legitimate driver data (globals, cached pointers, static tables) sitting
+# in the same module - exactly the kind of place real corruption could
+# land. Used now only to TAG a surviving candidate with which module it
+# falls inside, as information for the reader rather than a silent filter.
+function Get-ModuleNameForVA([int64]$vaInt, $moduleRanges) {
+    foreach ($r in $moduleRanges) {
+        if ($vaInt -ge $r.Start -and $vaInt -le $r.End) { return $r.Name }
+    }
+    return $null
+}
+
 # Pulls lines from a marker up to a stop pattern or maxLines, whichever
 # comes first. Used to read register/stack data straight out of !analyze
 # -v's own output rather than re-querying the debugger.
@@ -501,6 +558,32 @@ function Get-CandidatesFromDpsLines([string[]]$lines, [string]$tokenCore) {
         }
     }
     return $found
+}
+
+# Column-aware: STACK_TEXT prints "ChildSP RetAddr : Arg1 Arg2 Arg3 Arg4 :
+# symbol" per frame. ChildSP is just where the frame lives (same reasoning
+# as excluding dps's address column - it's a location, not a value).
+# RetAddr is a call site - code, not data. Only Arg1-4 are real candidate
+# values (a corrupted pointer could easily show up as one of a function's
+# own arguments). Returns both sets separately so RetAddr can be excluded
+# precisely by exact value later, rather than by discarding anything that
+# merely falls within the same module's overall address range (v0.6.0 -
+# see Get-ModuleNameForVA).
+function Get-CandidatesFromStackTextLines([string[]]$lines, [string]$tokenCore) {
+    $args = @()
+    $retAddrs = @()
+    $linePattern = "^\s*($tokenCore)\s+($tokenCore)\s*:\s*($tokenCore)\s+($tokenCore)\s+($tokenCore)\s+($tokenCore)\s*:"
+    foreach ($line in $lines) {
+        if ($line -match $linePattern) {
+            $retAddr = "0x" + (Get-HexClean $Matches[2])
+            if ((Is-KernelVA $retAddr) -and ($retAddrs -notcontains $retAddr)) { $retAddrs += $retAddr }
+            for ($g = 3; $g -le 6; $g++) {
+                $candidate = "0x" + (Get-HexClean $Matches[$g])
+                if ((Is-KernelVA $candidate) -and ($args -notcontains $candidate)) { $args += $candidate }
+            }
+        }
+    }
+    return [PSCustomObject]@{ Args = $args; RetAddrs = $retAddrs }
 }
 
 $dumps = Get-ChildItem -Path $DumpFolder -Filter *.dmp | Sort-Object Name
@@ -607,11 +690,34 @@ foreach ($dump in $dumps) {
     }
 
     $rspValue = $null
+    $ripValue = $null
     foreach ($l in $regBlockLines) {
-        if ($l -match 'rsp=([0-9a-f]+)') { $rspValue = $Matches[1]; break }
+        if ($l -match 'rsp=([0-9a-f]+)') { $rspValue = $Matches[1] }
+        if ($l -match 'rip=([0-9a-f]+)') { $ripValue = $Matches[1] }
     }
 
-    $candidateVAs = Get-CandidatesFromLines ($regBlockLines + $stackTextLines) $HexTokenPattern
+    # Register block: every value here is a real register at time of fault,
+    # no location/value ambiguity - broad scan is fine. STACK_TEXT: column-
+    # aware, since ChildSP/RetAddr aren't candidate data (see function doc).
+    $regCandidates = Get-CandidatesFromLines $regBlockLines $HexTokenPattern
+    $stackParsed = Get-CandidatesFromStackTextLines $stackTextLines $HexTokenCore
+    $candidateVAs = @($regCandidates + $stackParsed.Args) | Select-Object -Unique
+
+    # Exact-value known-code set: rip (where execution was) and every
+    # STACK_TEXT frame's return address (a call site). Excluded below by
+    # precise value match, NOT by discarding anything that merely falls
+    # within the same module's overall address range - that blunter
+    # approach (pre-v0.6.0) also discarded legitimate driver DATA sitting
+    # in the same module, which is exactly where real corruption could land.
+    $knownCodeInts = @()
+    if ($ripValue) {
+        $ripInt = Try-HexToInt64 ("0x" + $ripValue)
+        if ($ripInt) { $knownCodeInts += $ripInt }
+    }
+    foreach ($ra in $stackParsed.RetAddrs) {
+        $raInt = Try-HexToInt64 $ra
+        if ($raInt) { $knownCodeInts += $raInt }
+    }
 
     # Best-effort deeper stack read (only fires if a register block gave us
     # an rsp - won't apply to most 0x1a dumps, which is fine).
@@ -623,6 +729,28 @@ foreach ($dump in $dumps) {
         }
         $extra = Get-CandidatesFromDpsLines $dpsResult.Lines $HexTokenCore
         foreach ($c in $extra) { if ($candidateVAs -notcontains $c) { $candidateVAs += $c } }
+    }
+
+    # Per-candidate tiers, separate from Notes. Defaults to ContextPointer
+    # (assigned at result-build time below) unless set here to something
+    # Windows explicitly computed rather than a value merely found nearby.
+    $candidateTiers = @{}
+
+    # !analyze -v prints "Attempt to read/write/execute from address X" as
+    # part of an access-violation EXCEPTION_RECORD, computed by Windows
+    # itself from the exception's own parameters - not a value we located
+    # by scanning nearby registers/stack. Search is unconditional (not
+    # gated to specific codes): it only fires if the line is actually
+    # present, which in practice means access-violation-based codes like
+    # 0x7e. Harmless no-op for codes that don't print it (eg 0x3b, which
+    # has no separate EXCEPTION_RECORD; 0x139's FAST_FAIL exception has no
+    # memory-address parameter at all).
+    if ($joinedAnalyze -match '(?im)Attempt to (?:read|write|execute) from address\s+([0-9a-f]+)') {
+        $faultAddr = "0x" + (Get-HexClean $Matches[1])
+        if (Is-KernelVA $faultAddr) {
+            if ($candidateVAs -notcontains $faultAddr) { $candidateVAs += $faultAddr }
+            $candidateTiers[$faultAddr] = "FaultTargetAddress"
+        }
     }
 
     # Per-candidate notes, for cases where a candidate's meaning needs
@@ -712,11 +840,15 @@ foreach ($dump in $dumps) {
         # attempted here the same way as 0xef's Arg1/Arg3 - but IRQL_NOT_
         # LESS_OR_EQUAL is very often a near-NULL or otherwise non-canonical
         # pointer dereference, so this frequently won't pass Is-KernelVA at
-        # all. That's the correct, expected outcome, not a bug.
+        # all. That's the correct, expected outcome, not a bug. Same tier as
+        # the EXCEPTION_RECORD fault address above - both are Windows
+        # explicitly reporting "this is the address that was accessed", not
+        # a value we merely found nearby.
         $c = "0x" + (Get-HexClean $p1)
         if ((Is-KernelVA $c) -and ($candidateVAs -notcontains $c)) {
             $candidateVAs += $c
             $candidateNotes[$c] = "0xa Arg1: memory referenced at time of the fault (not debugger bookkeeping)."
+            $candidateTiers[$c] = "FaultTargetAddress"
         }
     }
 
@@ -763,7 +895,13 @@ foreach ($dump in $dumps) {
 
     foreach ($va in $candidateVAs) {
         $vaInt = Hex-ToInt64 $va
-        if (Is-InAnyModule $vaInt $moduleRanges) { continue }
+        # v0.6.0: only exact known-code values (rip, STACK_TEXT return
+        # addresses) are excluded here - see $knownCodeInts above. A
+        # candidate merely falling within a module's overall [start,end)
+        # range is no longer discarded outright; that range covers a
+        # module's data sections too, and blanket-excluding it threw away
+        # legitimate driver data along with genuine code addresses.
+        if ($knownCodeInts -contains $vaInt) { continue }
 
         $pteResult = Invoke-Cdb -DumpPath $dumpPath -Commands "!pte $va" -TimeoutSeconds 30
         if ($pteResult.TimedOut) {
@@ -782,6 +920,19 @@ foreach ($dump in $dumps) {
             } elseif ($bugCheckCode -eq "0x18b") {
                 $note = "0x18b argument semantics aren't officially documented by Microsoft - this candidate comes from STACK_TEXT only, not an explicitly-documented bugcheck argument. Lower confidence than other codes."
             }
+
+            # Tag (don't discard) if this VA falls inside a loaded module's
+            # image range - informational, since it could be legitimate
+            # driver data (a global, cached pointer, static table) rather
+            # than a false positive. The reader can weigh this themselves.
+            $moduleName = Get-ModuleNameForVA $vaInt $moduleRanges
+            if ($moduleName) {
+                $moduleNote = "Falls within loaded module '$moduleName' image range - may be driver/module data, not necessarily unrelated to the fault."
+                $note = if ($note) { "$note $moduleNote" } else { $moduleNote }
+            }
+
+            $tier = if ($candidateTiers.ContainsKey($va)) { $candidateTiers[$va] } else { "ContextPointer" }
+
             $results += [PSCustomObject]@{
                 Dump           = $dump.Name
                 BugCheckCode   = $bugCheckCode
@@ -789,7 +940,7 @@ foreach ($dump in $dumps) {
                 VA             = $va
                 Physical       = $phys
                 PhysicalInt    = Hex-ToInt64 $phys
-                Tier           = "ContextPointer"
+                Tier           = $tier
                 Note           = $note
             }
         }
