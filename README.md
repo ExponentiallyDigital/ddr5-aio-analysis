@@ -662,10 +662,10 @@ the future until reboot) result in a system hang, incorrect data
 being displayed or other strange crashes and corruption.
 ```
 
-Using the same command with the same memory address, after removing the exclusion and rebooting, `!dq /p 125A140FF` command shows no acess error:
+Using the same memory address, after removing the exclusion and rebooting, the `dq /p 125A140FF` command shows that `livekd64.exe` couldn't display the contents of that address (question marks are returned):
 
 ```console
-0: kd> !dq /p 125A140FF L2
+0: kd> dq /p 125A140FF L2
 00000001`25a140ff  ????????`???????? ????????`????????
 00000001`25a1410f  ????????`???????? ????????`????????
 00000001`25a1411f  ????????`???????? ????????`????????
@@ -676,11 +676,11 @@ Using the same command with the same memory address, after removing the exclusio
 00000001`25a1416f  ????????`???????? ????????`????????
 ```
 
-In the above, question marks are returned when `livekd64.exe` can't display the conmtents of a memory address. The first example shows that it was actively refused access to that region, the second shows that it couldn't display the contents of that address.
+What's the difference between `!dq /p ...` and `dq /p ...`? they run the in-built command or an extension. I noticed while writing this up that I'd used different commands :/. It's possible I did a bad copy and paste to my journal or maybe I did use different commands, so you'd need to verify this yourself. When I ran them I did have all three memory exclusion methods running: WHEA registry entries, `bcdedit`, and the BadMemory kernel driver. I do know that the BadMemory driver, see screenshot above, showed a FAIL for the memory rangfe which I assumed was caise by a precidence issue in that one of the other two methods have alreday disabled access to that region.
 
 ### 12.2. Sysinternal's `RAMMap`
 
-Another [Sysinternals](https://learn.microsoft.com/en-us/sysinternals/) tool, `RAMMap64.exe` gives you detailed information about Windows' memory use. It includes display of "bad" memory, memory locked out by WHEA records (if your hardware supports this). If not you can, however, use this tool to see what/who is allocated to specific memory ranges, that requires a lot of scrolling around to find the right on-screen location, but does give you the require information.
+Another [Sysinternals](https://learn.microsoft.com/en-us/sysinternals/) tool, `RAMMap64.exe` gives you detailed information about Windows' memory use. It includes display of "bad" memory, memory locked out by WHEA records (if your hardware supports this). If not you can, however, use this to see what/who is allocated to specific memory ranges, that requires a lot of scrolling around to find the right on-screen location, but does give you the require information.
 
 <figure align="center">
   <img src="./images/RAMMap.png" alt="ZenTimings" width="80%">
@@ -717,7 +717,7 @@ Based on the observed linearity of crash timing when tREFI is manually set, we c
   <figcaption>ZenTimings - low tREFI</figcaption>
 </figure>
 
-I tried 3,900 as a starting point for accelereted dump generation, which is -66.6% of the default. However, observed uptime from three test runs only averaged 1:58:32.442. It did though generated three dump files with `KERNEL_SECURITY_CHECK_FAILURE (139)` stop codes with one of the three dumps corrupted (dump failed with error code 0x0, completion of 95%). It also broke the linearity model showing a 50% difference between expected and observed, probably due to command bus saturation from the sheer volume of refresh events occuring. So, time to revert back to default `tREFI` which gives uptime of T2 (5h 55m), this is _bearable_ with ~4 dump files generated per day.s
+I tried 3,900 as a starting point for accelereted dump generation, which is -66.6% of the default. However, observed uptime from three test runs only averaged 1:58:32.442. It did though generate three dump files with `KERNEL_SECURITY_CHECK_FAILURE (139)` stop codes with one of the three dumps corrupted (dump failed with error code 0x0, completion of 95%). It also broke the linearity model showing a 50% difference between expected and observed, probably due to command bus saturation from the sheer volume of refresh events occuring. So, time to revert back to default `tREFI` which gives uptime of T2 (5h 55m), this is _bearable_ with ~4 dump files generated per day.s
 
 ## 15. Addendum - Windows memory patterns
 
