@@ -1,3 +1,5 @@
+# add-exclusions.ps1 - add WHEA memory exclusion addresses
+
 # Check for admin rights
 $isAdmin = ([Security.Principal.WindowsPrincipal] `
     [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -34,3 +36,4 @@ if (!(Test-Path $registryPath)) {
 Set-ItemProperty -Path $registryPath -Name "BadPages" -Value $bytes -Type Binary
 
 Write-Host "WHEA BadPages registry key updated successfully!" -ForegroundColor Green
+Write-Host "Reboot to activate." -ForegroundColor Yellow

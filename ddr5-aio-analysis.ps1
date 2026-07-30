@@ -48,6 +48,44 @@ Copyright (C) 2026 Andrew Newbury, Exponentially Digital.
   
 .NOTES
 .VERSION
+v0.5.0 Two changes, both prompted by the same run producing different
+  candidate counts (35 vs 28, 52 vs 50, etc.) across two back-to-back
+  executions over the identical dump folder with no script changes
+  between them:
+
+  1. Diagnostics.csv: every cdb call in this script (`!analyze -v`, `lm`,
+     the supplementary `dps`, the 0x1a `dq nt!MmPfnDatabase`/`?? sizeof`
+     pair, and every per-candidate `!pte`) already had its own timeout,
+     but a timeout on any of them beyond !analyze -v was previously either
+     silent or only logged to the console, not attributed anywhere. Since
+     candidate-count drift between runs on identical input is the
+     signature of a call landing on one side of a timeout under variable
+     system/symbol-cache load, each dump now tracks how many of its cdb
+     calls timed out and this is written to Diagnostics.csv alongside the
+     raw !analyze -v line count and final candidate count. A run with any
+     timeouts also now prints an explicit warning rather than leaving the
+     person to notice a discrepancy after the fact. This doesn't remove
+     the underlying timing variance (that's inherent to shelling out to
+     cdb repeatedly under load) but it means a count difference between
+     two runs is now attributable to a specific call instead of looking
+     like unexplained noise in the physical-address correlation.
+
+  2. Tier field + split correlation: every candidate previously went into
+     one flat correlation pass regardless of source. But only the 0x1a
+     subtype 0x41790 computed-PFN candidate is actually documented by
+     Microsoft as the corrupted physical page itself - every other
+     candidate (stack/register values run through !pte) is a pointer that
+     merely references some kernel structure at the time of the crash,
+     which is expected to recur across dumps for common bookkeeping
+     objects regardless of any DRAM defect. Results are now tagged
+     Tier = "ConfirmedPhysicalFault" or "ContextPointer", a new
+     ConfirmedPhysicalFault-Candidates.csv holds only the former, and
+     correlation now runs twice via the new Write-PhysicalCorrelation
+     function: once restricted to the confirmed tier (genuine fault-
+     recurrence evidence) and once over the full set (kept for reference,
+     explicitly labelled as not fault-location evidence on its own). This
+     replaces the single PhysicalAddress-Correlations.csv/-NearMatches.csv
+     pair that previously mixed both meanings together.
 v0.4.3 Added version display at commencement, console screenshot saved to
   the current directory, and displays script runtime at script completion.
 v0.4.2 Added -AnalyzeTimeoutSeconds (default 240, unchanged). A dump that
@@ -467,14 +505,27 @@ function Get-CandidatesFromDpsLines([string[]]$lines, [string]$tokenCore) {
 
 $dumps = Get-ChildItem -Path $DumpFolder -Filter *.dmp | Sort-Object Name
 $results = @()
+# Per-dump run diagnostics. This exists because candidate counts have been
+# observed to differ between two runs of this script over the SAME dump
+# folder (e.g. 35 vs 28 candidate VAs for one dump). Nothing in the script
+# was changed between such runs, so the cause has to be timing-dependent
+# cdb behaviour (cold vs warm symbol cache, system load, a call landing on
+# one side of one of the several per-call timeouts below). Rather than
+# silently emitting whatever came out, every timeout is now counted per
+# dump and written to Diagnostics.csv, so a count discrepancy between two
+# runs can be attributed to a specific timed-out call instead of treated
+# as unexplained noise.
+$diagnostics = @()
 
 foreach ($dump in $dumps) {
     $dumpPath = $dump.FullName
     Write-Host "`n===== Processing $($dump.Name) =====" -ForegroundColor Yellow
+    $dumpTimeoutCount = 0
 
     $analyzeResult = Invoke-Cdb -DumpPath $dumpPath -Commands ".symfix; .reload /f; !analyze -v" -TimeoutSeconds $AnalyzeTimeoutSeconds
     if ($analyzeResult.TimedOut) {
-        Write-Host "  Note: !analyze -v didn't exit cleanly within 240s. Using the output captured before the kill." -ForegroundColor DarkYellow
+        $dumpTimeoutCount++
+        Write-Host "  Note: !analyze -v didn't exit cleanly within $($AnalyzeTimeoutSeconds)s. Using the output captured before the kill - candidate extraction for this dump may be incomplete and may not match a re-run. See Diagnostics.csv." -ForegroundColor DarkYellow
     }
     $analyzeLines = $analyzeResult.Lines
     $joinedAnalyze = $analyzeLines -join "`n"
@@ -529,7 +580,8 @@ foreach ($dump in $dumps) {
 
     $lmResult = Invoke-Cdb -DumpPath $dumpPath -Commands "lm"
     if ($lmResult.TimedOut) {
-        Write-Host "  Note: lm timed out - module-range filtering will use whatever partial list was captured." -ForegroundColor DarkYellow
+        $dumpTimeoutCount++
+        Write-Host "  Note: lm timed out - module-range filtering will use whatever partial list was captured. A shorter module list here can leave a candidate wrongly un-excluded (or vice versa) - see Diagnostics.csv." -ForegroundColor DarkYellow
     }
     $moduleRanges = Get-ModuleRangesFromLines $lmResult.Lines
     Write-Host "  Loaded module ranges captured: $($moduleRanges.Count)"
@@ -566,6 +618,7 @@ foreach ($dump in $dumps) {
     if ($rspValue -and -not (Is-ZeroOrEmpty $rspValue)) {
         $dpsResult = Invoke-Cdb -DumpPath $dumpPath -Commands "dps 0x$rspValue L16" -TimeoutSeconds 30
         if ($dpsResult.TimedOut) {
+            $dumpTimeoutCount++
             Write-Host "  Note: supplementary stack dps timed out - continuing without it." -ForegroundColor DarkYellow
         }
         $extra = Get-CandidatesFromDpsLines $dpsResult.Lines $HexTokenCore
@@ -593,6 +646,8 @@ foreach ($dump in $dumps) {
                 # computation bypasses !pte entirely for this candidate.
                 $pfnDbResult = Invoke-Cdb -DumpPath $dumpPath -Commands "dq nt!MmPfnDatabase L1" -TimeoutSeconds 30
                 $mmpfnSizeResult = Invoke-Cdb -DumpPath $dumpPath -Commands "?? sizeof(nt!_MMPFN)" -TimeoutSeconds 30
+                if ($pfnDbResult.TimedOut) { $dumpTimeoutCount++; Write-Host "  Note: nt!MmPfnDatabase lookup timed out." -ForegroundColor DarkYellow }
+                if ($mmpfnSizeResult.TimedOut) { $dumpTimeoutCount++; Write-Host "  Note: sizeof(_MMPFN) lookup timed out." -ForegroundColor DarkYellow }
 
                 $mmPfnDatabaseInt = $null
                 foreach ($l in $pfnDbResult.Lines) {
@@ -627,7 +682,8 @@ foreach ($dump in $dumps) {
                             VA             = "(computed via PFN-database index, not VA-derived)"
                             Physical       = $physComputed
                             PhysicalInt    = Hex-ToInt64 $physComputed
-                            Note           = "0x1a subtype 0x41790: (Arg2 - MmPfnDatabase) / sizeof(_MMPFN). Page-aligned base only - this bugcheck gives no byte offset within the page."
+                            Tier           = "ConfirmedPhysicalFault"
+                            Note           = "0x1a subtype 0x41790: (Arg2 - MmPfnDatabase) / sizeof(_MMPFN). Page-aligned base only - this bugcheck gives no byte offset within the page. This is the ONLY candidate type in this script that Microsoft's documentation confirms IS the corrupted physical page, rather than a pointer that merely refers to it."
                         }
                     } else {
                         Write-Host "  (Arg2 - MmPfnDatabase) did not divide evenly by sizeof(_MMPFN) - values may be from the wrong session. Skipping computed candidate for this dump." -ForegroundColor Red
@@ -711,6 +767,7 @@ foreach ($dump in $dumps) {
 
         $pteResult = Invoke-Cdb -DumpPath $dumpPath -Commands "!pte $va" -TimeoutSeconds 30
         if ($pteResult.TimedOut) {
+            $dumpTimeoutCount++
             Write-Host "    [TIMEOUT] !pte $va - skipping this candidate." -ForegroundColor DarkYellow
             continue
         }
@@ -732,24 +789,61 @@ foreach ($dump in $dumps) {
                 VA             = $va
                 Physical       = $phys
                 PhysicalInt    = Hex-ToInt64 $phys
+                Tier           = "ContextPointer"
                 Note           = $note
             }
         }
     }
+
+    $diagnostics += [PSCustomObject]@{
+        Dump                = $dump.Name
+        BugCheckCode        = $bugCheckCode
+        AnalyzeTimedOut     = $analyzeResult.TimedOut
+        AnalyzeLineCount    = $analyzeLines.Count
+        FinalCandidateCount = $candidateVAs.Count
+        TimeoutsEncountered = $dumpTimeoutCount
+    }
+    if ($dumpTimeoutCount -gt 0) {
+        Write-Host "  [WARNING] $dumpTimeoutCount cdb call(s) timed out while processing this dump. Candidate counts for this dump may be incomplete and may not reproduce on a re-run under different system/symbol-cache load. See Diagnostics.csv." -ForegroundColor Red
+    }
 }
 
-Write-Host "`n===== Fault-Context Candidate Physical Addresses ====="
-if ($results.Count -gt 0) {
-    $results = $results | Sort-Object Physical, Dump
+# Runs the exact-match + near-match physical-address correlation over a
+# given subset of $results and writes "$FilePrefix-Correlations.csv" and
+# "$FilePrefix-NearMatches.csv". This is called separately for the
+# ConfirmedPhysicalFault tier and for the full (all-tier) candidate set,
+# because the two mean different things: a match among ConfirmedPhysical-
+# Fault rows means the same physical page was independently confirmed
+# corrupted in more than one dump - genuine fault-recurrence evidence. A
+# match among ContextPointer rows (stack/register values run through !pte)
+# only means two dumps happened to reference the same kernel object/
+# structure - expected for common bookkeeping structures regardless of any
+# DRAM defect, and NOT fault-location evidence on its own. Conflating the
+# two into a single correlation (as earlier versions of this script did)
+# made every match look like the same kind of signal.
+function Write-PhysicalCorrelation {
+    param(
+        [array]$Data,
+        [string]$OutputFolder,
+        [string]$FilePrefix,
+        [string]$ConsoleLabel,
+        [int64]$ProximityThresholdBytes
+    )
 
-    $allCsv = Join-Path $OutputFolder "FaultContext-Candidates.csv"
-    $results | Select-Object Dump, BugCheckCode, CorruptionType, VA, Physical, Note |
-        Export-Csv -Path $allCsv -NoTypeInformation -Encoding UTF8
-    Write-Host "All candidates (post module-range + bookkeeping filtering) saved to $allCsv"
+    $corrCsv = Join-Path $OutputFolder "$FilePrefix-Correlations.csv"
+    $nearCsv = Join-Path $OutputFolder "$FilePrefix-NearMatches.csv"
+
+    if (-not $Data -or $Data.Count -eq 0) {
+        Write-Host "`n[$ConsoleLabel] No candidates in this tier - skipping correlation." -ForegroundColor DarkGray
+        "PhysicalAddress,MatchType,DumpFile,BugCheckCode,CorruptionType,VirtualAddress,OccurrenceCount,Note" | Out-File -FilePath $corrCsv -Encoding UTF8
+        "PhysicalA,DumpA,BugCheckA,PhysicalB,DumpB,BugCheckB,DistanceBytes,MatchType" | Out-File -FilePath $nearCsv -Encoding UTF8
+        return
+    }
+
+    Write-Host "`n----- $ConsoleLabel -----" -ForegroundColor Cyan
 
     # ----- Exact matches, split by whether all dumps in the group share a bugcheck code -----
-    $physGroups = $results | Group-Object Physical | Where-Object { $_.Count -gt 1 }
-    $corrCsv = Join-Path $OutputFolder "PhysicalAddress-Correlations.csv"
+    $physGroups = $Data | Group-Object Physical | Where-Object { $_.Count -gt 1 }
     if ($physGroups) {
         $corrRows = $physGroups | ForEach-Object {
             $phys = $_.Name
@@ -770,7 +864,7 @@ if ($results.Count -gt 0) {
             }
         } | Sort-Object @{Expression = { if ($_.MatchType -eq "CrossCode") { 0 } else { 1 } }}, PhysicalAddress, DumpFile
         $corrRows | Export-Csv -Path $corrCsv -NoTypeInformation -Encoding UTF8
-        Write-Host "`nExact-match physical addresses across dumps saved to $corrCsv"
+        Write-Host "Exact-match physical addresses across dumps saved to $corrCsv"
 
         $crossGroups = $physGroups | Where-Object { ($_.Group | Select-Object -ExpandProperty BugCheckCode -Unique).Count -gt 1 }
         $sameGroups  = $physGroups | Where-Object { ($_.Group | Select-Object -ExpandProperty BugCheckCode -Unique).Count -eq 1 }
@@ -787,13 +881,12 @@ if ($results.Count -gt 0) {
             $sameGroups | ForEach-Object { Write-Host ("    {0}  (seen in {1} dumps)" -f $_.Name, $_.Count) -ForegroundColor DarkYellow }
         }
     } else {
-        Write-Host "`nNo physical address recurred exactly across more than one dump."
+        Write-Host "No physical address recurred exactly across more than one dump."
         "PhysicalAddress,MatchType,DumpFile,BugCheckCode,CorruptionType,VirtualAddress,OccurrenceCount,Note" | Out-File -FilePath $corrCsv -Encoding UTF8
     }
 
     # ----- Near matches, tagged per-pair as SameCode/CrossCode -----
-    $nearCsv = Join-Path $OutputFolder "PhysicalAddress-NearMatches.csv"
-    $sortedByPhys = $results | Sort-Object PhysicalInt
+    $sortedByPhys = $Data | Sort-Object PhysicalInt
     $nearRows = @()
     for ($i = 0; $i -lt $sortedByPhys.Count - 1; $i++) {
         for ($j = $i + 1; $j -lt $sortedByPhys.Count; $j++) {
@@ -818,7 +911,7 @@ if ($results.Count -gt 0) {
     if ($nearRows.Count -gt 0) {
         $nearRows | Sort-Object @{Expression = { if ($_.MatchType -eq "CrossCode") { 0 } else { 1 } }}, DistanceBytes |
             Export-Csv -Path $nearCsv -NoTypeInformation -Encoding UTF8
-        Write-Host "`nNear-match candidates (within $ProximityThresholdBytes bytes, different dumps) saved to $nearCsv"
+        Write-Host "Near-match candidates (within $ProximityThresholdBytes bytes, different dumps) saved to $nearCsv"
 
         $crossNear = $nearRows | Where-Object { $_.MatchType -eq "CrossCode" } | Sort-Object DistanceBytes
         $sameNear  = $nearRows | Where-Object { $_.MatchType -eq "SameCode" }  | Sort-Object DistanceBytes
@@ -836,9 +929,37 @@ if ($results.Count -gt 0) {
             }
         }
     } else {
-        Write-Host "`nNo near-match candidates within $ProximityThresholdBytes bytes across different dumps."
+        Write-Host "No near-match candidates within $ProximityThresholdBytes bytes across different dumps."
         "PhysicalA,DumpA,BugCheckA,PhysicalB,DumpB,BugCheckB,DistanceBytes,MatchType" | Out-File -FilePath $nearCsv -Encoding UTF8
     }
+}
+
+Write-Host "`n===== Fault-Context Candidate Physical Addresses ====="
+if ($results.Count -gt 0) {
+    $results = $results | Sort-Object Physical, Dump
+
+    $allCsv = Join-Path $OutputFolder "FaultContext-Candidates.csv"
+    $results | Select-Object Dump, BugCheckCode, CorruptionType, VA, Physical, Tier, Note |
+        Export-Csv -Path $allCsv -NoTypeInformation -Encoding UTF8
+    Write-Host "All candidates (post module-range + bookkeeping filtering) saved to $allCsv"
+
+    $confirmed = @($results | Where-Object { $_.Tier -eq "ConfirmedPhysicalFault" })
+    $confirmedCsv = Join-Path $OutputFolder "ConfirmedPhysicalFault-Candidates.csv"
+    $confirmed | Select-Object Dump, BugCheckCode, CorruptionType, Physical, Note |
+        Export-Csv -Path $confirmedCsv -NoTypeInformation -Encoding UTF8
+    Write-Host "Confirmed-tier candidates (documented as the actual corrupted physical page, not merely a pointer referencing it) saved to $confirmedCsv ($($confirmed.Count) row(s))"
+
+    # Two separate correlation passes over two different meanings of "match" -
+    # see the comment on Write-PhysicalCorrelation above. Only the first is
+    # fault-recurrence evidence; the second is retained for reference and
+    # pattern-spotting only.
+    Write-PhysicalCorrelation -Data $confirmed -OutputFolder $OutputFolder -FilePrefix "ConfirmedPhysicalFault" `
+        -ConsoleLabel "CONFIRMED PHYSICAL FAULT correlation - $($confirmed.Count) candidate(s); the only tier that constitutes fault-location evidence" `
+        -ProximityThresholdBytes $ProximityThresholdBytes
+
+    Write-PhysicalCorrelation -Data $results -OutputFolder $OutputFolder -FilePrefix "PhysicalAddress" `
+        -ConsoleLabel "Context-pointer correlation, all tiers - $($results.Count) candidate(s); reference only, NOT fault-location evidence on its own" `
+        -ProximityThresholdBytes $ProximityThresholdBytes
 
     $typeCsv = Join-Path $OutputFolder "CorruptionType-Summary.csv"
     $results | Select-Object Dump, BugCheckCode, CorruptionType -Unique |
@@ -847,6 +968,14 @@ if ($results.Count -gt 0) {
     Write-Host "`nPer-dump bugcheck code / P1 summary saved to $typeCsv"
 } else {
     Write-Host "No fault-context candidates found in any supported dump."
+}
+
+$diagCsv = Join-Path $OutputFolder "Diagnostics.csv"
+$diagnostics | Export-Csv -Path $diagCsv -NoTypeInformation -Encoding UTF8
+$totalTimeouts = ($diagnostics | Measure-Object -Property TimeoutsEncountered -Sum).Sum
+Write-Host "`nPer-dump run diagnostics saved to $diagCsv"
+if ($totalTimeouts -gt 0) {
+    Write-Host "[WARNING] $totalTimeouts cdb call(s) timed out across this run. If a re-run over the same dumps produces different candidate counts, check Diagnostics.csv first - a timeout is the most likely explanation, not a real difference in the dumps." -ForegroundColor Red
 }
 
 Write-Host "`nDone."
