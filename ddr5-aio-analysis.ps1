@@ -51,6 +51,17 @@ Copyright (C) 2026 Andrew Newbury, Exponentially Digital.
   
 .NOTES
 .VERSION
+v0.6.1 Fixed a crash: two call sites used Hex-ToInt64 directly instead of
+  Try-HexToInt64 - the exclusion filter (Where-Object over $candidateVAs)
+  and the per-candidate loop's $vaInt assignment. Convert.ToInt64 throws
+  OverflowException on some malformed hex strings, and an uncaught
+  exception inside a Where-Object filter halts the whole pipeline
+  enumeration at that point rather than just skipping the offending item -
+  seen live on a 0xa dump where this silently truncated ~26 candidates
+  down to 1. Both sites now use Try-HexToInt64 and explicitly skip
+  unparseable candidates instead of aborting; PhysicalInt assignments
+  (built from our own well-formed hex strings, lower risk but same class
+  of call) were hardened the same way for consistency.
 v0.6.0 Two fixes, both prompted by a direct question about whether step 6
   of the execution-logic summary (module-range filtering) was discarding
   candidates it shouldn't, and whether Windows actually hands us a
@@ -809,7 +820,7 @@ foreach ($dump in $dumps) {
                             CorruptionType = $p1
                             VA             = "(computed via PFN-database index, not VA-derived)"
                             Physical       = $physComputed
-                            PhysicalInt    = Hex-ToInt64 $physComputed
+                            PhysicalInt    = Try-HexToInt64 $physComputed
                             Tier           = "ConfirmedPhysicalFault"
                             Note           = "0x1a subtype 0x41790: (Arg2 - MmPfnDatabase) / sizeof(_MMPFN). Page-aligned base only - this bugcheck gives no byte offset within the page. This is the ONLY candidate type in this script that Microsoft's documentation confirms IS the corrupted physical page, rather than a pointer that merely refers to it."
                         }
@@ -885,16 +896,26 @@ foreach ($dump in $dumps) {
     }
 
     $preExclusionCount = $candidateVAs.Count
-    $candidateVAs = $candidateVAs | Where-Object { $excludedInts -notcontains (Hex-ToInt64 $_) }
+    # Use Try-HexToInt64, not Hex-ToInt64, inside this filter. An unprotected
+    # Hex-ToInt64 call that throws on one malformed candidate doesn't just
+    # skip that candidate - Where-Object's default error behavior halts the
+    # whole pipeline enumeration at that point, silently truncating every
+    # candidate after it. A candidate that can't even be parsed to Int64 is
+    # dropped explicitly here instead, and processing continues normally.
+    $candidateVAs = $candidateVAs | Where-Object {
+        $intVal = Try-HexToInt64 $_
+        ($null -ne $intVal) -and ($excludedInts -notcontains $intVal)
+    }
     $excludedCount = $preExclusionCount - $candidateVAs.Count
     if ($excludedCount -gt 0) {
-        Write-Host "  Excluded $excludedCount candidate(s) matching known bookkeeping values." -ForegroundColor DarkGray
+        Write-Host "  Excluded $excludedCount candidate(s) matching known bookkeeping values or unparseable." -ForegroundColor DarkGray
     }
 
     Write-Host "  Candidate kernel VAs from fault context: $($candidateVAs.Count)"
 
     foreach ($va in $candidateVAs) {
-        $vaInt = Hex-ToInt64 $va
+        $vaInt = Try-HexToInt64 $va
+        if ($null -eq $vaInt) { continue }
         # v0.6.0: only exact known-code values (rip, STACK_TEXT return
         # addresses) are excluded here - see $knownCodeInts above. A
         # candidate merely falling within a module's overall [start,end)
@@ -939,7 +960,7 @@ foreach ($dump in $dumps) {
                 CorruptionType = $p1
                 VA             = $va
                 Physical       = $phys
-                PhysicalInt    = Hex-ToInt64 $phys
+                PhysicalInt    = Try-HexToInt64 $phys
                 Tier           = $tier
                 Note           = $note
             }
