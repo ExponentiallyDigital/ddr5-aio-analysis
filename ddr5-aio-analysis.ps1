@@ -39,18 +39,21 @@ Copyright (C) 2026 Andrew Newbury, Exponentially Digital.
     [-ProximityThresholdBytes 0x1000] `
     [-VerboseOnTimeout] `
 
-  -CDB and -SymbolPath - only need overriding if your WinDbg install isn't in your path or your symbol cache lives somewhere other than the default, see README.md
-  -ProximityThresholdBytes - controls how close two physical addresses from different dumps have to be to count as a near-match (default `0x10000`; tighten this as your dump count grows, since a wide threshold on a large dump set produces a lot of coincidental pairings, see README.md.
- -VerboseOnTimeout - displays all raw output from `cdb.exe` for use in situations where cdb execution exceeds 240s.
+  -CDB and -SymbolPath - only need overriding if your WinDbg install isn't in your path or your symbol cache lives
+   somewhere other than the default, see README.md
+  -ProximityThresholdBytes - controls how close two physical addresses from different dumps have to be to count as
+   a near-match (default `0x10000`; tighten this as your dump count grows, since a wide threshold on a large dump
+   set produces a lot of coincidental pairings, see README.md.
+  -VerboseOnTimeout - displays all raw output from `cdb.exe` for use in situations where cdb execution exceeds 240s.
 
 .BACKLOG
-  - add 0x200001and 0x12b stop code(s)
-  - FIX overflow when processing FullDump_20260725_081904-a_IRQL_NOT_LESS_OR_EQUAL.dmp
-    error is: "Exception calling "ToInt64" with "2" argument(s): "Value was either too
-    large or too small for a UInt64."
+  - Add analysis of 2 stop codes: FAULTY_HARDWARE_CORRUPTED_PAGE (12b) & HYPERVISOR_ERROR (20001). Need dump files.
+  - FIX app must be in foreground for screenshot of console output, otherwise you get a copy of whatever is in
+    the clipboard.
   
 .NOTES
 .VERSION
+v0.6.2 Added screenshots from v0.6.1 execution. Updated .BACKLOG.
 v0.6.1 Fixed a crash: two call sites used Hex-ToInt64 directly instead of
   Try-HexToInt64 - the exclusion filter (Where-Object over $candidateVAs)
   and the per-candidate loop's $vaInt assignment. Convert.ToInt64 throws
