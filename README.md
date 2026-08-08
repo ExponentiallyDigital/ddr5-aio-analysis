@@ -34,7 +34,7 @@
 - [8. Output files](#8-output-files)
 - [9. Sample console output](#9-sample-console-output)
 - [10. Interpreting results](#10-interpreting-results)
-- [11. Excluding physical memory addresses from use on Windows](#11-excluding-physical-memory-addresses-from-use-on-windows)
+- [11. Excluding physical memory addresses from use in Windows](#11-excluding-physical-memory-addresses-from-use-in-windows)
   - [11.1. `bcdedit`](#111-bcdedit)
   - [11.2. WHEA registry records](#112-whea-registry-records)
   - [11.3. BadMemory kernel driver](#113-badmemory-kernel-driver)
@@ -552,7 +552,7 @@ Neither kind of match is proof by itself. Before trusting any specific physical 
 
 ---
 
-## 11. Excluding physical memory addresses from use on Windows
+## 11. Excluding physical memory addresses from use in Windows
 
 There are three ways to do this:
 
@@ -629,7 +629,7 @@ I was testing with `bcdedit` and WHEA at the same time as this screenshot, which
 
 ## 12. How do you know if exclusions are working?
 
-WWichever tool you use I suggest including a 1 page (4KB) buffer before and after each exclusion.
+Whichever tool you use I suggest including a 1 page (4KB) buffer before and after each exclusion.
 
 ```text
 Cluster 1
