@@ -530,15 +530,17 @@ The script writes four CSVs to `-OutputFolder`:
 
 ## 9. Sample console output
 
-<figure align="center">
+<p align="center">
   <img src="./images/ddr5-aio-console-output-1.png" alt="Console output" width="100%">
-  <figcaption>Sample console output</figcaption>
-</figure>
+  <br>
+  Sample console output
+</p>
 <br>
-<figure align="center">
+<p align="center">
   <img src="./images/ddr5-aio-console-output-2.png" alt="Console output" width="100%">
-  <figcaption>Sample console output</figcaption>
-</figure>
+  <br>
+  Sample console output
+</p>
 
 ---
 
@@ -594,10 +596,11 @@ Display exclusions:
 
 Here's what that looks like in use:
 
-<figure align="center">
+<p align="center">
   <img src="./images/bcdedit.png" alt="Console output" width="50%">
-  <figcaption>bcdedit exclusions</figcaption>
-</figure>
+  <br>
+  bcdedit exclusions
+</p>
 
 ### 11.2. WHEA registry records
 
@@ -616,10 +619,11 @@ What are the practical implications of disabling `secure boot` and enabling unsi
 
 It does however have a GUI for entering/checking that exclusions are working (stored in the registry):
 
-<figure align="center">
+<p align="center">
   <img src="./images/BadMemory-driver.png" alt="Console output" width="30%">
-  <figcaption>Exclusions</figcaption>
-</figure>
+  <br>
+  Exclusions
+</p>
 
 I was testing with `bcdedit` and WHEA at the same time as this screenshot, which is why the exclusions are showing here as `FAIL`, I believe, but see the waning in [12.1. Sysinternals \`livekd'](#121-sysinternals-livekd).
 
@@ -683,10 +687,11 @@ Using the same memory address, after removing the exclusion and rebooting, the `
 
 Another [Sysinternals](https://learn.microsoft.com/en-us/sysinternals/) tool, `RAMMap64.exe` gives you detailed information about Windows' memory use. It includes display of "bad" memory, memory locked out by WHEA records (if your hardware supports this). If not you can, however, use this to see what/who is allocated to specific memory ranges, that requires a lot of scrolling around to find the right on-screen location, but does give you the require information.
 
-<figure align="center">
+<p align="center">
   <img src="./images/RAMMap.png" alt="ZenTimings" width="80%">
-  <figcaption>SysInternals RAMMap</figcaption>
-</figure>
+  <br>
+  SysInternals RAMMap
+</p>
 
 ---
 
@@ -694,10 +699,11 @@ Another [Sysinternals](https://learn.microsoft.com/en-us/sysinternals/) tool, `R
 
 For my specific environment, I can vary T1/T2 since uptime scales with tREFI. This saves having to wait many, many days to get a usable sample of dump files for analysis. A crash time of ~5h 55m (T2) occurs repeatably with optimised BIOS defaults which sets `bank refresh mode = auto`, and EXPOII which sets `tREFI = 11,677`, optimised BIOS defaults also sets `bank refresh mode` to `mixed`:
 
-<figure align="center">
+<p align="center">
   <img src="./images/ZenTimings_Screenshot_tREFI=11677.png" alt="ZenTimings" width="60%">
-  <figcaption>ZenTimings - EXPOII stock</figcaption>
-</figure>
+  <br>
+  ZenTimings - EXPOII stock
+</p>
 
 Based on the observed linearity of crash timing when tREFI is manually set, we can deduce an actual crash time, and when paired with an observed crash time at that setting, this gives us:
 
@@ -713,12 +719,13 @@ Based on the observed linearity of crash timing when tREFI is manually set, we c
 
 **NB** all the above values, except the `tREFI=3,900` row were obtained from test runs with `bank refresh mode = normal` which doubles uptime from `bank refresh mode = auto (mixed)` (the BIOS default when set to `auto`). The **actual crash time** for `tREFI=3,900` was obtained from 3 runs with `bank refresh mode = auto (mixed)`, resulting in these values:
 
-<figure align="center">
+<p align="center">
   <img src="./images/ZenTimings_Screenshot_tREFI=3900.png" alt="ZenTimings" width="60%">
-  <figcaption>ZenTimings - low tREFI</figcaption>
-</figure>
+  <br>
+  ZenTimings - low tREFI
+</p>
 
-I tried 3,900 as a starting point for accelereted dump generation, which is -66.6% of the default. However, observed uptime from three test runs only averaged 1:58:32.442. It did though generate three dump files with `KERNEL_SECURITY_CHECK_FAILURE (139)` stop codes with one of the three dumps corrupted (dump failed with error code 0x0, completion of 95%). It also broke the linearity model showing a 50% difference between expected and observed, probably due to command bus saturation from the sheer volume of refresh events occuring. So, time to revert back to default `tREFI` which gives uptime of T2 (5h 55m), this is _bearable_ with ~4 dump files generated per day.s
+I tried 3,900 as a starting point for accelereted dump generation, which is -66.6% of the default. However, observed uptime from three test runs only averaged 1:58:32.442. It did though generate three dump files with `KERNEL_SECURITY_CHECK_FAILURE (139)` stop codes with one of the three dumps corrupted (dump failed with error code 0x0, completion of 95%). It also broke the linearity model showing a 50% difference between expected and observed, probably due to command bus saturation from the sheer volume of refresh events occuring. So, time to revert back to default `tREFI` which gives uptime of T2 (5h 55m), this is _bearable_ with ~4 dump files generated per day.
 
 ## 14. Addendum - Windows memory patterns
 
