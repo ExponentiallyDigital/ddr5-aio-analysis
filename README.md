@@ -72,7 +72,12 @@ The RAM in question is ADATA AX5U6000C3032G 2×32 GB, SK Hynix A‑die (4.1), du
 
 Once myriad software and hardware set-ups had been ruled out, it turned out that single stick testing of the matched pair showed one stick always caused crashes at T1 or T2.
 
+**Update: 2026-10-13** the exact same issue occurs with Corsair CMK64GX5M2B6200C32 2x32 GB, SK Hynix A‑die, dual‑rank, EXPO 6200 MT/s CL32-38-38-80.
+
 As an intellectual challenge, I wanted to find, if possible, commonalities across those crashes. On the assumption that Windows stop codes will change depending on which Windows structure is corrupted, and short of physical analysis (with FIB, e-beam, or decapping and visual inspection, to ascertain if the defect is in the refresh counter, the row decoder, or the bank multiplexer), I decided to look for physical address correlations in full Windows memory dump files. Hence this repo, gentle reader, which I'm sharing with you.
+
+> [!NOTE]
+> **Update: 2026-10-13** this issue is ongoing having replaced motherboards, CPUs, and RAM - but the _**exact same**_ CPU and RAM combination does not fault on an MSI X870 board with the same AGESA that fails on an ASUS X870E-E board. This appears to imply that there is something unique about the ASUS boards that causes RAM instability linked to bank refresh mode and tREFI - see [ROG Forums - 9950X3D crashes at a fixed DRAM refresh count, not a fixed time: evidence for an AGESA counter overflow](https://rog-forum.asus.com/t5/gaming-desktops/9950x3d-crashes-at-a-fixed-dram-refresh-count-not-a-fixed-time/m-p/1154098#M1069) and [ROG Forums - 9950X3D or 3D2 crashes at a fixed DRAM refresh count: evidence for an AGESA counter overflow](https://rog-forum.asus.com/t5/gaming-motherboards/9950x3d-or-3d2-crashes-at-a-fixed-dram-refresh-count-evidence/m-p/1163451).
 
 ### 2.1. Key questions
 
